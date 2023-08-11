@@ -1,0 +1,1486 @@
+---
+title: "Nice Coding Epigenetics"
+author: "Joel Pablos Martin"
+date: "2023-02-26"
+output: html_document
+---
+
+
+
+# Setting working directory
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir ="/srv/data/joelpm/Code")
+setwd("/srv/data/joelpm/Code")
+getwd()
+```
+
+```{r, eval=FALSE}
+# To convert the .rmd to .R
+knitr::purl("/srv/data/joelpm/Code/FullRunMotifEnrichment_JPM_mewtwo.rmd", documentation=2)
+```
+
+# Load packages
+```{r, eval = FALSE}
+# install.packages("devtools")
+# devtools::install_github("GreenleafLab/chromVARmotifs")
+# BiocManager::install("GenomicRanges")
+# BiocManager::install("monaLisa")
+# BiocManager::install("JASPAR2020")
+# devtools::install_github("GreenleafLab/chromVARmotifs")
+# BiocManager::install("TFBSTools")
+# BiocManager::install("DiffBind")
+# BiocManager::install("DirichletMultinomial")
+# BiocManager::install("BSgenome.Mmusculus.UCSC.mm39")
+# BiocManager::install("SummarizedExperiment")
+# BiocManager::install("Biostrings")
+# BiocManager::install("ComplexHeatmap")
+# BiocManager::install("HDF5Array")
+# BiocManager::install("BiocParallel")
+# install.packages("snow")
+# install.packages("circlize")
+# install.packages("Seurat")
+```
+
+```{r, results = FALSE, echo = FALSE, message = FALSE}
+library(devtools)
+library(GenomicRanges)
+library(monaLisa)
+library(JASPAR2020)
+library(TFBSTools)
+library(DiffBind)
+library(DirichletMultinomial)
+library(BSgenome.Mmusculus.UCSC.mm39)
+library(SummarizedExperiment)
+library(Biostrings)
+library(ComplexHeatmap)
+library(HDF5Array)
+library(BiocParallel)
+library(snow)
+library(circlize)
+library(Seurat)
+library(chromVARmotifs)
+```
+
+
+# Data loading and preprocessing
+## S4 class definitions
+```{r}
+# We define a subclass called "SumExp" and "GRanges"
+
+setClass("MyClass_NICHE", slots = c(KC = "list", HSC = "list", LSEC = "list", Hep = "list", Neutro = "list", KC_KG = "list", Mono_KG = "list"))
+
+# We create an instance of MyClass
+NICHE_RawData <- new("MyClass_NICHE", KC = list(), HSC = list(), LSEC = list(), Hep = list(), Neutro = list(), KC_KG = list(), Mono_KG = list())
+NICHE_GR <- new("MyClass_NICHE", KC = list(), HSC = list(), LSEC = list(), Hep = list(), Neutro = list(), KC_KG = list(), Mono_KG = list())
+NICHE_Seq <- new("MyClass_NICHE", KC = list(), HSC = list(), LSEC = list(), Hep = list(), Neutro = list(), KC_KG = list(), Mono_KG = list())
+NICHE_SE <- new("MyClass_NICHE", KC = list(), HSC = list(), LSEC = list(), Hep = list(), Neutro = list(), KC_KG = list(), Mono_KG = list())
+NICHE_SESimMotif <- new("MyClass_NICHE", KC = list(), HSC = list(), LSEC = list(), Hep = list(), Neutro = list(), KC_KG = list(), Mono_KG = list())
+NICHE_SEKmer <- new("MyClass_NICHE", KC = list(), HSC = list(), LSEC = list(), Hep = list(), Neutro = list(), KC_KG = list(), Mono_KG = list())
+NICHE_SEKmerSim <- new("MyClass_NICHE", KC = list(), HSC = list(), LSEC = list(), Hep = list(), Neutro = list(), KC_KG = list(), Mono_KG = list())
+NICHE_SEtable <- new("MyClass_NICHE", KC = list(), HSC = list(), LSEC = list(), Hep = list(), Neutro = list(), KC_KG = list(), Mono_KG = list())
+```
+
+
+## Data loading
+```{r, eval = FALSE}
+# We load the SEACR files with the peaks genomic ranges
+# The SEACR (Sparse Enrichment Analysis for CUT&RUN) tabular file structure: 
+# <chr>	<start>	<end>	<total signal>	<max signal>	<max signal region>
+SEACRheader <- c("chr","start","end","total_signal","max_signal","max_signal_region")
+BEDheader <- c("chr","start","end","name","score","strand","thickStart","thickEnd","itemRgb","blockCount","blockSizes","blockStarts")
+
+# Select here the cell types you want to load:
+cell_types <- c("KC","HSC","LSEC","Hep","Neutro","KC_KG","Mono_KG") # cell_types <- c("KC","HSC","LSEC","Hep") ## ALL CELL TYPES
+assays <- c("ATAC","CNR")
+histmod <- c("H3K27Ac","H3K27Me3","H3K4Me1","H3K4Me3")
+replicates <- seq(1,2)
+
+for (cell in cell_types){
+  message(cell)
+  for (assay in assays){ 
+    message(assay,": ",cell)
+      if (assay == "ATAC"){ # Loading ATAC-seq data
+        for (r in replicates){
+          if (grepl("KG", cell)){ # Kris Glass Glass Mono and KC data
+            message(" - Kris Glass data:")
+            path_ATAC <- paste0("../Data/nf-core/atacseq/KGlass/bwa/merged_library/macs2/narrow_peak/",cell,"_REP",r,".mLb.clN_peaks.narrowPeak")
+          }else{ # Normal ATAC processing
+            path_ATAC <- paste0("../Data/nf-core/atacseq/",cell,"/bwa/merged_library/macs2/narrow_peak/",cell,"_REP",r,".mLb.clN_peaks.narrowPeak")}
+          varname <- paste0(assay,".",r)
+          df <- read.table(file = path_ATAC, sep = '\t', header = F)
+          colnames(df) <- BEDheader[1:10] # Add BED header names
+          df <- df[nchar(df$chr) <= 5,] # We filter those chr outside the genomic boundaries
+          rownames(df) <- 1:nrow(df)
+          slot(NICHE_RawData, cell)[[varname]] <- df
+          
+          # We create a GenomicRanges object
+          slot(NICHE_GR, cell)[[varname]] <- 
+             with(df, GRanges(
+                    seqnames = Rle(chr),
+                    ranges = IRanges(start, end, names = 1:nrow(df)),
+                    score = score))
+        }
+      }else if(assay == "CNR"){ # Loading Cut&Run or ChiP-seq data
+          if (grepl("KG", cell)){ # Kris Glass Mono and KC data
+            for (r in replicates){
+              message(" - Kris Glass data:")
+              message(" H3K27Ac")
+              path_CNR <- paste0("../Data/nf-core/chipseq/KGlass/bwa/merged_library/macs2/broad_peak/",cell,"_H3K27Ac_REP",r,".mLb.clN_peaks.broadPeak")
+              ChIPseq_header <- c("chr", "start", "end", "peak_name", "peak_height", "strand", "fold_enrich", "neg_log10_pvalue", "neg_log10_qvalue")
+              varname <- paste0("H3K27Ac.",r)
+              df <- read.table(file = path_CNR, sep = '\t', header = F)
+              colnames(df) <- ChIPseq_header # Add SEACR header names
+              df <- df[nchar(df$chr) <= 5,] # We filter those chr outside the genomic boundaries
+              rownames(df) <- 1:nrow(df)
+              slot(NICHE_RawData, cell)[[varname]] <- df
+              
+              # We create a GenomicRanges object
+              slot(NICHE_GR, cell)[[varname]] <- 
+                 with(df, GRanges(
+                            seqnames = Rle(chr),
+                            ranges = IRanges(start, end, names = 1:nrow(df)),
+                            score = fold_enrich))
+            }
+          }else{ # Normal CNR processing
+            for (h in histmod){
+              for (r in replicates){
+                message(" ",h)
+                path_CNR <- paste0("../Data/CNR/",cell,"/SEACR/",cell,"_",h,"_",r,"_SEACR.tabular")
+                varname <- paste0(h,".",r)
+                
+                df <- read.table(file = path_CNR, sep = '\t', header = F)
+                colnames(df) <- SEACRheader # Add SEACR header names
+                df <- df[nchar(df$chr) <= 5,] # We filter those chr outside the genomic boundaries
+                rownames(df) <- 1:nrow(df)
+                slot(NICHE_RawData, cell)[[varname]] <- df
+                
+                # We create a GenomicRanges object
+                slot(NICHE_GR, cell)[[varname]] <- 
+                   with(df, GRanges(
+                              seqnames = Rle(chr),
+                              ranges = IRanges(start, end, names = 1:dim(df)[1]),
+                              score = total_signal))
+            }
+          }
+        }
+    }
+  }
+}
+
+
+suppressWarnings(rm(assay, assays, BEDheader, cell, cell_types, ChIPseq_header, h, histmod, path_ATAC, path_CNR, r, replicates, SEACRheader, varname, df))
+```
+
+We load the S4 object with the GenomicRanges for all the experiments
+```{r, eval=F}
+# We can save the S4 object containing the raw data in Genomic Ranges format in binary format
+dir.create("../Data/S4objects/", recursive = TRUE)
+#save(NICHE_RawData, ascii=FALSE, file="../Data/S4objects/NICHEthesis_RawData.bin")
+#save(NICHE_GR, ascii=FALSE, file="../Data/S4objects/NICHEthesis_GR_raw.bin")
+```
+
+```{r}
+rm(NICHE_GR)
+rm(NICHE_RawData)
+load("../Data/S4objects/NICHEthesis_GR_raw.bin")
+# load("../Data/S4objects/NICHEthesis_RawData.bin")
+# str(NICHE_GR)
+```
+
+## Extract overlapping peaks between biological replicates and assays from promoter and enhancer regions
+First, we find the overlapping genomic ranges between biological replicates. For the motif enrichment we will extract the two common core genomic regions and their sequences:
+ 1. **Promoters:** genomic regions with open chromatin (ATAC-seq) AND promoter located (H3K4me3)*.
+ 2. **Enhancers:** genomic regions with open chromatin (ATAC-seq) AND enhancer located (H3K4me1)*.
+**Optionally it can be filtered to NOT IN silenced regions (H3K27me3), but it is not always necessary since active and silenced CUT&RUN peaks are usually antagonist).*
+Finally, we extract their corresponding genomic sequences from the BSgenome.Mmusculus.UCSC.mm39.
+```{r}
+cell_types <- c("KC","HSC","LSEC","Hep","Neutro","KC_KG","Mono_KG")
+
+suppressWarnings(
+for (cell in cell_types){
+  if (length(slot(NICHE_GR, cell)) > 0){
+    message(cell)
+    slts <- slot(NICHE_GR, cell)
+    snam <- names(slts)
+    snam <- snam[!snam %in% c("H3K27Ac", "H3K27Me3", "H3K4Me1", "H3K4Me3", "ATAC", "promoters", "enhancers")]
+    mwnam <- c()
+    for (s in seq(1,length(slts),2)){
+      GR1 <- slts[[snam[s]]]
+      GR2 <- slts[[snam[s+1]]]
+      
+      # find the overlapping genomic ranges between GR1 and GR2 biological replicates
+      overlapp_ranges <- findOverlaps(GR1, GR2)
+      
+      # extract the overlapping ranges
+      overlapp_GR1 <- GR1[unique(overlapp_ranges@from)]
+      overlapp_GR2 <- GR2[unique(overlapp_ranges@to)]
+      sumGR12 <- c(overlapp_GR1, overlapp_GR2)
+      
+      # merging the overlapping regions on at least 1 bp to create a larger window result of these overlaps
+      mergedwindows <- reduce(sumGR12, min.gapwidth=0)
+      mwnam <- append(mwnam,gsub('\\..*','',snam[s]))
+      slot(NICHE_GR, cell)[[gsub('\\..','',snam[s])]] <- mergedwindows
+      # We remove the biological replicates to save space
+      slot(NICHE_GR, cell)[[snam[s]]] <- NULL
+      slot(NICHE_GR, cell)[[snam[s+1]]] <- NULL
+    }
+
+    ########### We extract each of the merged genomic windows for each type of assay
+    snam <- names(slot(NICHE_GR, cell))
+    ATAC <- slot(NICHE_GR, cell)[[snam[grepl("ATAC$", snam, ignore.case=TRUE)]]] # Open chromatin: ATAC
+    H3K27Ac <- slot(NICHE_GR, cell)[[snam[grepl("H3K27Ac$", snam, ignore.case=TRUE)]]] # Active regions: H3K27Ac
+    if (!grepl("KG", cell)){
+      H3K27Me3 <- slot(NICHE_GR, cell)[[snam[grepl("H3K27Me3$", snam, ignore.case=TRUE)]]] # Silenced regions: H3K27Me3
+      H3K4Me1 <- slot(NICHE_GR, cell)[[snam[grepl("H3K4Me1$", snam, ignore.case=TRUE)]]] # Enhancers: H3K4Me1
+      H3K4Me3 <- slot(NICHE_GR, cell)[[snam[grepl("H3K4Me3$", snam, ignore.case=TRUE)]]] # Promoters: H3K4Me3
+    
+    ########### Promoters: genomic regions with open chromatin (ATAC-seq) AND promoter located (H3K4me3).
+    ## We find the overlaps between the 3 pairs of assays
+    P.ATAC_H3K4Me3 <- findOverlaps(ATAC, H3K4Me3)
+    ## We get the genomic regions that overlap between both assays
+    P.ATAC <- ATAC[P.ATAC_H3K4Me3@from]
+    P.H3K4Me3 <- H3K4Me3[P.ATAC_H3K4Me3@to]
+    ## Now we merge all those regions in one unique GRanges object, where the genomic windows overlapping are fused together
+    slot(NICHE_GR, cell)[["promoters"]] <- reduce(c(P.ATAC, P.H3K4Me3), min.gapwidth=0)
+    message("\tPromoter regions: ", length(slot(NICHE_GR, cell)[["promoters"]]))
+    
+    ########### Finally, we extract the DNA sequences corresponding to the promoter GRanges from the BSgenome.Mmusculus.UCSC.mm39 
+    slot(NICHE_Seq, cell)[["promoters"]] <- getSeq(BSgenome.Mmusculus.UCSC.mm39, slot(NICHE_GR, cell)[["promoters"]])
+    }
+    ########### Enhancers: genomic regions with open chromatin (ATAC-seq) AND enhancer located (H3K4me1).
+    ## We find the overlaps between the 3 pairs of assays
+    E.ATAC_H3K4Me1 <- findOverlaps(ATAC, H3K4Me1)
+    ## We get the list of genomic regions that overlap between both assays
+    E.ATAC <- ATAC[E.ATAC_H3K4Me1@from]
+    E.H3K4Me1 <- H3K4Me1[E.ATAC_H3K4Me1@to]
+    ## Now we merge all those regions in one unique GRanges object, where the genomic windows overlapping are fused together
+    slot(NICHE_GR, cell)[["enhancers"]] <- reduce(c(E.ATAC, E.H3K4Me1), min.gapwidth=0)
+    message("\tEnhancer regions: ", length(slot(NICHE_GR, cell)[["enhancers"]]))
+    
+    ########### Finally, we extract the DNA sequences corresponding to the enhancer GRanges from the BSgenome.Mmusculus.UCSC.mm39 
+    slot(NICHE_Seq, cell)[["enhancers"]] <- getSeq(BSgenome.Mmusculus.UCSC.mm39, slot(NICHE_GR, cell)[["enhancers"]])
+    
+    # We remove the ATAC and CUT&RUN single assays GenomicRanges Objects to save space
+    for (exp in snam){slot(NICHE_GR, cell)[[exp]] <- NULL}
+  }
+})
+# remove GR1 and GR2, and the variables to save memory
+rm(GR1, GR2, overlapp_GR1, overlapp_GR2, overlapp_ranges, s, snam, cell, slts, mwnam, H3K27Ac, H3K27Me3, H3K4Me1, H3K4Me3, ATAC, ATAC_H3K4Me3, ATAC_H3K27Ac, H3K4Me3_H3K27Ac, P.ATAC, P.H3K4Me3, P.ATAC_H3K4Me3, ATAC_H3K4Me1, H3K4Me1_H3K27Ac, E.ATAC, E.H3K4Me1, E.ATAC_H3K4Me1, sumGR12, mergedwindows, exp)
+```
+
+
+```{r, eval = F}
+# We can save the S4 object containing the processed data in Genomic Ranges format in binary format
+dir.create("../Data/S4objects/", recursive = TRUE)
+# save(NICHE_GR, ascii=FALSE, file="../Data/S4objects/NICHEthesis_GR_promANDenhc.bin")
+# save(NICHE_Seq, ascii=FALSE, file="../Data/S4objects/NICHEthesis_Seq.bin")
+```
+
+```{r, eval=F}
+# rm(NICHE_GR)
+# rm(NICHE_Seq)
+load("../Data/S4objects/NICHEthesis_GR_promANDenhc.bin")
+load("../Data/S4objects/NICHEthesis_Seq.bin")
+# NICHE_GR
+# NICHE_Seq
+```
+
+Now we will extract for each cell type the specific Cis-Regulatory Modules (CRM) (promoters and enhancers) only present in that cell and not in the rest of the cell from the niche (i.e. **cell-specific**)
+```{r}
+# cell_types <- c("KC","HSC","LSEC","Hep","Neutro","KC_KG","Mono_KG")
+CELLS1 <- c("KC","HSC","LSEC","Hep","Neutro")
+CELLS2 <- c("KC","HSC","LSEC","Hep")
+CELLS3 <- c("KC_KG","Mono_KG")
+CELLS_LIST <- list(CELLS1, CELLS2, CELLS3)
+suppressWarnings(
+for (C in CELLS_LIST){
+  CELLS <- C
+  for (cell in CELLS){
+    if (length(slot(NICHE_GR, cell)) > 0){
+      excl <- CELLS[ !CELLS == cell ]
+      message("\n",cell," ...")
+      
+      # First, we generate the background sequences from the other NICHE-cells to 
+      # filter-out from our specific cell in each loop iteration
+      CRM_list <- c("promoters","enhancers")
+      if (grepl("KG", cell)){
+        CRM_list <- c("enhancers")
+      }
+      for (CRM in CRM_list){
+        NICHE_back <- c(slot(NICHE_GR, excl[1])[[CRM]])
+        message(paste0("\t",excl[1],"_",CRM),": ", length(slot(NICHE_GR, excl[1])[[CRM]]))
+        if (grepl("KG", cell)){
+          message(paste0("\t",excl[1],"_",CRM),": ", length(slot(NICHE_GR, bkcell)[[CRM]]))
+          NICHE_back <- c(NICHE_back, slot(NICHE_GR, excl[1])[[CRM]])
+          slot(NICHE_GR, cell)[[paste0(CRM, "_background")]] <- reduce(NICHE_back, min.gapwidth=0)
+        }else{
+          for (bkcell in excl[2:length(excl)]){
+            message(paste0("\t",bkcell,"_",CRM),": ", length(slot(NICHE_GR, bkcell)[[CRM]]))
+            NICHE_back <- c(NICHE_back, slot(NICHE_GR, bkcell)[[CRM]])
+            slot(NICHE_GR, cell)[[paste0(CRM, "_background")]] <- reduce(NICHE_back, min.gapwidth=0)
+          }
+        }
+        message(cell, " NICHE ", CRM, " background generated (length: ",
+              length(slot(NICHE_GR, cell)[[paste0(CRM, "_background")]]), ")")
+      
+        # Once we have the NICHE background, we overlap the each cell GRanges against the 
+        # NICHE background GRanges, and select just those regions that do not overlap 
+        # (i.e. the CRM are specific of our cell (cell-specificity))
+        mainCell <- slot(NICHE_GR, cell)[[CRM]]
+        overlapped_bkg <- findOverlaps(mainCell, NICHE_back)
+        specific <- c(1:length(mainCell))
+        # we obtain the non overlapped regions from the main cell
+        specific <- specific[!specific %in% unique(overlapped_bkg@from)]
+        selmainCell <- mainCell[specific]
+      ## Now we merge all those regions in one unique GRanges object, where the windows overlapping are fused
+      slot(NICHE_GR, cell)[[paste0(CRM,"_cellspecific")]] <- reduce(selmainCell, min.gapwidth=0)
+      message("Specific ",cell," filtering from ",length(mainCell), " to ", length(specific)," CRMs\n")
+      
+      # Finally, we extract the DNA sequences corresponding to the promoter and enhancer GRanges from the BSgenome.Mmusculus.UCSC.mm39 
+      slot(NICHE_Seq, cell)[[paste0(CRM,"_cellspecific")]] <- getSeq(BSgenome.Mmusculus.UCSC.mm39, selmainCell)
+      slot(NICHE_Seq, cell)[[CRM]] <- NULL # to save space
+      
+      }
+    }
+  }
+})
+rm(CELLS, CELLS1, CELLS2, CELLS3, CELLS_LIST, C, CRM_list, cell, excl, CRM, NICHE_back, bkcell, mainCell, overlapped_bkg, specific, selmainCell)
+```
+
+
+```{r, eval = F}
+# We can save the S4 object containing the processed data in Genomic Ranges format in binary format
+dir.create("../Data/S4objects/", recursive = TRUE)
+# save(NICHE_GR, ascii=FALSE, file="../Data/S4objects/NICHEthesis_GR_cellspecific.bin")
+# save(NICHE_Seq, ascii=FALSE, file="../Data/S4objects/NICHEthesis_Seq_cellspecific.bin")
+```
+
+```{r, eval=F}
+# rm(NICHE_GR)
+# rm(NICHE_Seq)
+load("../Data/S4objects/NICHEthesis_GR_cellspecific.bin")
+load("../Data/S4objects/NICHEthesis_Seq_cellspecific.bin")
+# NICHE_GR
+# NICHE_Seq
+```
+
+
+# Motif enrichment analysis: comparing a set of sequences to a suitable background
+Reference: https://fmicompbio.github.io/monaLisa/articles/monaLisa.html#nobins
+
+## Transcription Factor Binding Sites (TFBS) per peak and motif
+We look for TF motifs spanning enhancers and promoters in the mouse liver macrophage niche cells that can explain log-fold variations in chromatin accessibility (ATAC-seq) or histone modifications (CUT&RUN). We load the JASPAR2020 Transcription Factor Binding Motifs (TFBMs) database.
+https://zenodo.org/record/6814702#.ZG-ErHZBxD8 (cisBP human and mouse TF motif PFMs)
+```{r}
+PFMsDB <- readRDS("../Data/GimmeMotifs/CisBP_forR/cisBP_mouse_pfms_2021.rds?download=1")
+db = "CISBP"
+namesTFs <- names(PFMsDB@listData)
+for (tf in namesTFs){PFMsDB@listData[[tf]]@ID <- tf}
+PWMsDB <- toPWM(PFMsDB) # Convert PFM matrix list to a PWM matrix list with TFBStools
+length(PWMsDB)
+c("Nr1h3", "Rbpj","Rxra","Irf8","Spi1","Spic","Hand2") %in% namesTFs
+```
+
+```{r}
+# we get the PWMs from Mus musculus TFs from JASPAR database
+PWMsDB <- getMatrixSet(JASPAR2020, opts = list(matrixtype = "PWM", tax_group = "vertebrates", familly = "mus.musculus"))
+length(PWMsDB)
+db = "JASPAR20"
+# We change the nomenclature to small caps for mouse
+transform_name <- function(name) {
+  parts <- strsplit(name, "::")[[1]]
+  transformed_parts <- tools::toTitleCase(tolower(parts))
+  transformed_name <- paste(transformed_parts, collapse = "::")
+  return(transformed_name)
+}
+
+namesTFs <- names(PWMsDB@listData)
+for (tf in namesTFs){
+  newname <- sapply(PWMsDB@listData[[tf]]@name, transform_name)[[1]]
+  PWMsDB@listData[[tf]]@ID <- newname
+  # PWMsDB@listData[[tf]]@name <- tf
+  PWMsDB@listData[[tf]]@name <- newname
+  names(PWMsDB@listData)[names(PWMsDB@listData) == tf] <- newname
+}
+length(PWMsDB)
+namesTFs <- names(PWMsDB@listData)
+namesTFs[grepl("Nr1h3|Rbpj|Rxra|Irf8|Spi1|Spic|Hand2", namesTFs)]
+```
+
+```{r, eval = FALSE, echo = FALSE}
+set.seed(204)
+PWMsDB <- sample(PWMsDB,30)
+PWMsDB
+```
+
+## Motif Enrichment against genome (background)
+Here we do the motif enrichment function from monalLisa performed against the mm39 genome as background. Using the plotMotifHeatmaps function, we can plot the results by selecting all transcription factor motifs with a log10FDR of at least 4.0 (equivalent to an FDR<10^-4). The following FDR values are saved in the negLog10Padj assay:
+
+```{r, eval=F}
+######### NO CELL SPECIFIC ######### 
+# rm(NICHE_SE)
+# rm(NICHE_SESimMotif)
+# load("../Data/S4objects/NICHE_Seq.bin")
+# load("../Data/S4objects/NICHE_SE.bin")
+# load("../Data/S4objects/NICHE_SESimMotif.bin")
+# NICHE_SE
+# NICHE_SESimMotif
+
+######### CELL SPECIFIC ######### 
+# rm(NICHE_SE)
+# rm(NICHE_SESimMotif)
+load("../Data/S4objects/NICHEthesis_Seq_cellspecific.bin")
+load(paste0("../Data/S4objects/NICHEthesis_SE_cellspecific_",db,".bin"))
+load(paste0("../Data/S4objects/NICHEthesis_SESimMotif_cellspecific_",db,".bin"))
+load(paste0("../Data/S4objects/NICHEthesis_SEtable_cellspecific_",db,".bin"))
+# NICHE_SE
+# NICHE_SESimMotif
+```
+
+We load expression data from the Liver scRNAseq Cell Atlas
+https://www.livercellatlas.org/
+```{r}
+ATLAS <- read.table("../Data/ATLAS/MouseStSt/All_pseudoBulkCell.tsv")
+ATLAS[, seq(2, ncol(ATLAS), by = 2)] <- ATLAS[, seq(2, ncol(ATLAS), by = 2)] / 100 # Divide perCellExpr columns by 100
+ATLAS
+```
+
+We perform monaLisa motif enrichment on the data
+```{r}
+#NICHE_SESimMotif <- new("MyClass_NICHE", KC = list(), HSC = list(), LSEC = list(), Hep = list(), Neutro = list(), KC_KG = list(), Mono_KG = list())
+# cis regulatory modules (CRMs) motif enrichment
+suppressWarnings(
+for (cell in slotNames(NICHE_Seq)){
+  cellname <- gsub("_KG", "", cell)
+  if (length(slot(NICHE_Seq, cell)) > 0){
+    slts <- slot(NICHE_Seq, cell)
+    snam <- names(slts)
+    for (s in seq(1,length(slts))){
+      message(paste0("\n\t",cell," ",snam[s], " monaLisa Motif Enrichment analysis...\n"))
+      peakseq <- slts[[snam[s]]]
+      if (length(slot(NICHE_SE, cell)[[snam[s]]]) == 0){
+      se <- calcBinnedMotifEnrR(seqs = peakseq,
+                           pwmL = PWMsDB,
+                           background = "genome",
+                           genome = BSgenome.Mmusculus.UCSC.mm39,
+                           genome.regions = NULL, # sample from full genome
+                           genome.oversample = 2, 
+                           BPPARAM = BiocParallel::MulticoreParam(workers = 30, RNGseed = 42),
+                           verbose = TRUE) #BPPARAM = BiocParallel::SnowParam(workers = 30),
+      slot(NICHE_SE, cell)[[snam[s]]] <- se
+      message("",cell," ",snam[s], " monaLisa Motif Enrichment SE object created\n")
+      
+      # Save the SE in a h5 file
+      dir.create(paste0("../Results/MotifEnrichmentSE/",cell), recursive = TRUE)
+      folder <- paste0("../Results/MotifEnrichmentSE/", cell,"/Thesis_MotifEnr_", cell, "_",snam[s],"_",Sys.Date())
+      unlink(folder, recursive = TRUE)
+      saveHDF5SummarizedExperiment(se, dir=folder)
+      
+      }else{se <- slot(NICHE_SE, cell)[[snam[s]]]
+      message("",cell," ",snam[s], " monaLisa Motif Enrichment SE object already existed\n")}
+      
+
+      # we add expression data from the Liver Cell Atlas
+      # cell_ATLAS <- ATLAS[,grep(cellname, colnames(ATLAS))]
+      # colnames(cell_ATLAS) <- gsub(paste0(cellname,"_"), "", colnames(cell_ATLAS))
+      
+      # x <- cell_ATLAS[match(se@NAMES, row.names(cell_ATLAS)), ]
+      # se@assays@data@listData[["tpm"]] <- as.matrix(x$tpm)
+      # se@assays@data@listData[["PercCellsExpr"]] <- as.matrix(x$PercCellsExpr)
+      
+      # We extract the motif enrichmnt results
+      SEtable <- data.frame(se@assays@data@listData)
+      rownames(SEtable) <- se@NAMES
+      colnames(SEtable) <- names(se@assays@data@listData)
+      
+       if(TRUE){
+          # We add the expression data
+          cell_ATLAS <- ATLAS[,grep(cellname, colnames(ATLAS))]
+          colnames(cell_ATLAS) <- gsub(paste0(cellname,"_"), "", colnames(cell_ATLAS))
+          SEtable$tpm <- rep(0, nrow(SEtable))
+          SEtable$PercCellsExpr <- rep(0, nrow(SEtable))
+          for (r in seq(1,nrow(SEtable))){
+            if(grepl("::", rownames(SEtable)[r])){
+              ABC <- strsplit(rownames(SEtable)[r], split = "::")[[1]]
+    
+              ABCname <- c()
+              for (t in seq(1,length(ABC))){
+                ABCname <- c(ABCname, paste0(toupper(substring(ABC[t], 1, 1)), tolower(substring(ABC[t], 2))))
+              }
+              ABCname <- gsub("var","Var",ABCname)
+              rownames(SEtable)[r] <- knitr::combine_words(ABCname, sep = "::", and = "")
+              
+              # ABCname <- c("Cebpg(var.2)","Smad1", "Cebpg(var.3)")
+              ABCvar <- c()
+              TFexp <- c()
+              for (t in seq(1,length(ABCname))){
+                TFname <- strsplit(ABCname[t], split = "\\(")[[1]][1]
+                ABCvar <- c(ABCvar, TFname)
+                TFexp <- c(TFexp, unlist(cell_ATLAS[TFname == rownames(cell_ATLAS),], use.names = FALSE))
+              }
+              # Filter ut TFs with expression in less than 5% of the cells
+              if (sum(!TFexp[1:length(TFexp) %% 2 == 0] >= 0.05) > 0){SEtable$tpm[r] <- NA ; SEtable$PercCellsExpr[r] <- NA
+              }else{
+                SEtable$tpm[r] <- mean(TFexp[1:length(TFexp) %% 2 != 0])
+                SEtable$PercCellsExpr[r] <- mean(TFexp[1:length(TFexp) %% 2 == 0]) 
+                }
+              
+            }else{
+              TF <- paste0(toupper(substring(rownames(SEtable)[r], 1, 1)), tolower(substring(rownames(SEtable)[r], 2)))
+              TF <- gsub("var","Var",TF)
+              TFname <- strsplit(TF, split = "\\(")[[1]][1]
+              TFexp <- unlist(cell_ATLAS[TFname == rownames(cell_ATLAS),], use.names = FALSE)
+              rownames(SEtable)[r] <- TF
+              SEtable$tpm[r] <- TFexp[1]
+              SEtable$PercCellsExpr[r] <- TFexp[2]
+            }
+          }
+          SEtable <- SEtable[complete.cases(SEtable), ]
+        }
+      
+      
+
+      # We select the significant peaks with FDR < -log10(0.05) and plot the top 30 most enriched TFBMs and those that are expressed in at least 5% of the cells.
+      SEtable <- na.omit(SEtable)
+      SEtable <- SEtable[SEtable$negLog10Padj > -log10(0.05),]
+      SEtable <- SEtable[SEtable$PercCellsExpr > 0.05,]
+      SEtable <- SEtable[order(-SEtable$log2enr),]
+      
+      message(paste0(nrow(SEtable), " significantly enriched TFBMs "))
+      write.table(SEtable, paste0("../Results/MotifEnrichmentSE/", cell,"/Thesis_TOPSignEnrich_", cell, "_",snam[s],"_",db,".txt"), sep = "\t", quote = F, col.names = NA)
+      slot(NICHE_SEtable, cell)[[snam[s]]] <- SEtable
+      
+      # We get the motif IDs
+      meta <- se@elementMetadata@listData[["motif.name"]]
+      mnames <- rownames(SEtable)
+      # for (tf in rownames(SEtable)){mnames <- c(mnames, names(meta)[meta == tf])}
+      # mnames <- names(se@elementMetadata@listData[["motif.pfm"]])
+      
+      # We calculate motif similarity between all the PFM form enriched TFBMs
+      if (length(slot(NICHE_SESimMotif, cell)[[snam[s]]]) == 0){
+      motifSim <- motifSimilarity(se@elementMetadata@listData[["motif.pfm"]][mnames],
+                      y = NULL,
+                      method = "R",
+                      BPPARAM = BiocParallel::MulticoreParam(workers = 30, RNGseed = 42),
+                      verbose = TRUE) # BiocParallel::SnowParam(workers = 20)
+      colnames(motifSim) <- se@elementMetadata@listData[["motif.id"]][mnames]
+      rownames(motifSim) <- se@elementMetadata@listData[["motif.id"]][mnames]
+      slot(NICHE_SESimMotif, cell)[[snam[s]]] <- motifSim
+      message("",cell," ",snam[s], " Motif Similarity performed\n")
+      }else{motifSim <- slot(NICHE_SESimMotif, cell)[[snam[s]]]
+      message("",cell," ",snam[s], " Motif Similarity object already existed\n")}
+
+      # We plot the top most enriched TFBMs cluster them by K-means
+      if (nrow(SEtable)>=30){n=30}else{n=nrow(SEtable)}
+      t50 <- rownames(SEtable)[1:n]
+      hc <- hclust(as.dist(1-motifSim[t50,t50]))
+      hcorder <- hc[["labels"]][hc[["order"]]]
+      h <- c()
+      for (i in hcorder){h <- c(h, names(which(meta == i)))}
+      # top_TFs <- se[hcorder]
+      top_TFs <- se[t50,]
+      #top_TFs <- se[mnames][1:50]
+      
+      
+      top_TFs@assays@data@listData[["sumForegroundWgtWithHits"]] <- as.array(matrix(SEtable[top_TFs@NAMES, "PercCellsExpr"], ncol = 1), dimnames = list(top_TFs@NAMES, NULL))
+      rownames(top_TFs@assays@data@listData[["sumForegroundWgtWithHits"]]) <- top_TFs@NAMES
+      top_TFs@assays@data@listData[["sumBackgroundWgtWithHits"]] <- as.array(matrix(SEtable[top_TFs@NAMES, "tpm"], ncol = 1), dimnames = list(top_TFs@NAMES, NULL))
+      rownames(top_TFs@assays@data@listData[["sumBackgroundWgtWithHits"]]) <- top_TFs@NAMES
+      
+      # We plot it in a motif enrichment with the top 50 most enriched TFBMs
+      dir.create(paste0("../Results/MotifEnrichmentSE/",cell,"/Plots"), recursive = TRUE)
+      jpeg(file=paste0("../Results/MotifEnrichmentSE/",cell,"/Plots/Thesis_MotifEnr_",cell,"_",snam[s],"_",db,".jpeg"), width = 9, height = 12, units = 'in', res = 300)
+      
+       
+      plotMotifHeatmaps(x = top_TFs,
+                        which.plots = c("log2enr", "negLog10Padj"),
+                        width = 1.8,
+                        maxEnr = 2,
+                        maxSig = 10,
+                        show_seqlogo = TRUE,
+                        show_motif_GC = FALSE) # , "tpm", "PercCellsExpr"
+      
+      dev.off()
+      
+      # We plot it in a similarity matrix with a heatmap
+      hmap <- Heatmap(motifSim, 
+                      show_row_names = TRUE,
+                      row_names_gp = gpar(fontsize = dim(SEtable)[1]*0.2),
+                      show_column_names = TRUE,
+                      column_names_gp = gpar(fontsize = dim(SEtable)[1]*0.2),
+                      name = "Similarity", 
+                      column_title = paste0("Motif Similarity Matrix: ", cell," ",snam[s]),
+                      column_title_gp = gpar(fontsize = dim(SEtable)[1]*0.35),
+                      col = colorRamp2(c(0, 1), c("white", c("steelblue4","chartreuse4")[s])))
+      
+     jpeg(file=paste0("../Results/MotifEnrichmentSE/",cell,"/Plots/Thesis_MotifEnrSimilarity_",cell,"_",snam[s],"_",db,".jpeg"), width = dim(SEtable)[1]*0.265, height = dim(SEtable)[1]*0.265, units = 'in', res = 300)
+     print(hmap)
+     dev.off()
+     
+     pdf(file=paste0("../Results/MotifEnrichmentSE/",cell,"/Plots/MotifEnrSimilarity_",cell,"_",snam[s],"_",db,".pdf"), width = dim(SEtable)[1]*0.265, height = dim(SEtable)[1]*0.265)
+     print(hmap)
+     dev.off()
+     
+     # We save the S4 object containing the SE objects from motif enrichment in binary format
+     # dir.create("../Data/S4objects/", recursive = TRUE)
+     # save(NICHE_SE, ascii=FALSE, file=paste0("../Data/S4objects/NICHEthesis_SE_cellspecific_",db,".bin"))
+     # save(NICHE_SESimMotif, ascii=FALSE, file=paste0("../Data/S4objects/NICHEthesis_SESimMotif_cellspecific_",db,".bin"))
+     # save(NICHE_SEtable, ascii=FALSE, file=paste0("../Data/S4objects/NICHEthesis_SEtable_cellspecific_",db,".bin"))
+     
+     # We remove the variables created to save memory
+     rm(peakseq, se, folder, SEtable, meta, mnames, motifSim, t50, hc, hcorder, h, top_TFs, hmap, SEtable_exp, cell_ATLAS, x)
+    }
+  }
+  rm(slts, snam)
+})
+rm(s, cell, i, tf, n, cellname)
+```
+
+```{r,echo = FALSE; eval = FALSE}
+plotMotifHeatmaps <- function(x,
+                              which.plots = c("negLog10P", "pearsonResid", 
+                                              "negLog10Padj", "log2enr"),
+                              width = 4,
+                              col.enr = c("#053061", "#2166AC", "#4393C3",
+                                          "#92C5DE", "#D1E5F0", "#F7F7F7",
+                                          "#FDDBC7", "#F4A582", "#D6604D",
+                                          "#B2182B", "#67001F"),
+                              col.sig = c("#F0F0F0", "#D9D9D9", "#BDBDBD",
+                                          "#969696", "#737373", "#525252",
+                                          "#252525", "#000000"),
+                              col.gc = c("#F7FCF5", "#E5F5E0", "#C7E9C0",
+                                         "#A1D99B", "#74C476", "#41AB5D",
+                                         "#238B45", "#006D2C", "#00441B"),
+                              maxEnr = NULL,
+                              maxSig = NULL,
+                              highlight = NULL,
+                              cluster = FALSE,
+                              show_dendrogram = FALSE,
+                              show_motif_GC = FALSE,
+                              show_seqlogo = FALSE,
+                              width.seqlogo = 1.5,
+                              use_raster = FALSE,
+                              na_col = "white", 
+                              doPlot = TRUE,
+                              ...) {
+    stopifnot(exprs = {
+        is(x, "SummarizedExperiment")
+        all(which.plots %in% assayNames(x))
+        "bins" %in% names(metadata(x))
+        (!show_motif_GC || "motif.percentGC" %in% colnames(rowData(x)))
+    })
+    b <- metadata(x)$bins
+    # .assertScalar(x = width, type = "numeric", rngExcl = c(0, Inf))
+    # .assertScalar(x = show_dendrogram, type = "logical")
+    # .assertScalar(x = show_motif_GC, type = "logical")
+    # .assertScalar(x = show_seqlogo, type = "logical")
+    # .assertScalar(x = width.seqlogo, type = "numeric", rngExcl = c(0, Inf))
+    # .assertScalar(x = use_raster, type = "logical")
+    # .assertScalar(x = na_col, type = "character")
+    # .assertScalar(x = doPlot, type = "logical")
+    stopifnot(exprs = {
+        ncol(x) == nlevels(b)
+        all(which.plots %in% c("negLog10P", "negLog10Padj", 
+                               "pearsonResid", "log2enr"))
+        is.null(highlight) || (is.logical(highlight) && 
+                                 length(highlight) == nrow(x))
+    })
+    bincols <- attr(getColsByBin(b), "cols")
+    if (identical(cluster, TRUE)) {
+        clAssayName <- "pearsonResid"
+        clAssay <- assay(x, clAssayName)
+        allNA <- rowSums(is.na(clAssay)) == ncol(clAssay)
+        if (any(allNA)) {
+            warning("removing motifs without finite values in '",
+                    clAssayName, "': ",
+                    paste(rownames(clAssay)[allNA], collapse = ", "))
+            x <- x[!allNA, ]
+            clAssay <- clAssay[!allNA, ]
+        }
+        clres <- hclust(dist(clAssay))
+    } else if (identical(cluster, FALSE)) {
+        clres <- FALSE
+    } else if (is(cluster, "hclust")) {
+        clres <- cluster
+    } else {
+        stop("'cluster' must be either TRUE, FALSE or an hclust-object.")
+    }
+    hmBin <- HeatmapAnnotation(df = data.frame(bin = colnames(x)), name = "bin",
+                               col = list(bin = bincols),
+                               show_annotation_name = FALSE,
+                               which = "column", width = unit(width,"inch"),
+                               annotation_height = unit(width / 16, "inch"),
+                               show_legend = FALSE)
+    tmp <- matrix(if (!is.null(highlight)) {
+        as.character(highlight) 
+    } else {
+        rep(NA, nrow(x))
+    },
+    ncol = 1, dimnames = list(unname(rowData(x)$motif.name), NULL))
+    hmSeqlogo <- NULL
+    if (show_seqlogo) {
+        pfms <- rowData(x)$motif.pfm
+        maxwidth <- max(vapply(TFBSTools::Matrix(pfms), ncol, 0L))
+        grobL <- lapply(pfms, seqLogoGrob, xmax = maxwidth, xjust = "center")
+        hmSeqlogo <- HeatmapAnnotation(
+            logo = annoSeqlogo(grobL = grobL, which = "row",
+                               space = unit(0.5, "mm"),
+                               width = unit(width.seqlogo, "inch")),
+            show_legend = FALSE, show_annotation_name = FALSE, which = "row")
+    }
+    hmMotifs <- Heatmap(
+        matrix = tmp, name = "names",
+        width = unit(if (!is.null(highlight)) .2 else 0, "inch"),
+        na_col = NA, col = c("TRUE" = "green3", "FALSE" = "white"),
+        cluster_rows = clres, show_row_dend = show_dendrogram,
+        cluster_columns = FALSE, show_row_names = TRUE,
+        row_names_side = "left", show_column_names = FALSE,
+        show_heatmap_legend = FALSE, left_annotation = hmSeqlogo,
+        ...
+    )
+
+    assayNameMap1 <- c(negLog10P = "P value",
+                       negLog10Padj = "adj. P value",
+                       pearsonResid = "Pearson residual",
+                       log2enr = "log2 enrichment")
+    assayNameMap2 <- c(negLog10P = "P value (-log10)",
+                       negLog10Padj = "adj. P value (-log10)",
+                       pearsonResid = "Pearson residual (o-e)/sqrt(e)",
+                       log2enr = "enrichment (log2)")
+    L <- list(labels = hmMotifs)
+    if (show_motif_GC) {
+        tmp <- as.matrix(rowData(x)[, "motif.percentGC", drop = FALSE])
+        hmPercentGC <- Heatmap(
+            matrix = tmp, name = "Percent G+C",
+            width = unit(0.2, "inch"), na_col = NA,
+            col = colorRamp2(breaks = c(0, seq(20, 80, length.out = 254), 100),
+                             colors = colorRampPalette(col.gc)(256)),
+            cluster_rows = FALSE, cluster_columns = FALSE,
+            show_row_names = FALSE, show_column_names = FALSE,
+            show_heatmap_legend = TRUE,
+            heatmap_legend_param = list(color_bar = "continuous"),
+            use_raster = use_raster,
+            ...
+        )
+        L <- c(L, list("percentGC" = hmPercentGC))
+    }
+    ret <- c(L, lapply(which.plots, function(w) {
+        dat <- assay(x, w)
+        if ((w == "pearsonResid") | (w == "log2enr")) {
+            rng <- c(-1, 1) * if (is.null(maxEnr)) {
+                quantile(abs(dat), .995, na.rm = TRUE) 
+            } else {
+                maxEnr
+            }
+            cols <- col.enr
+        } else {
+            rng <- c(0, 
+                     if (is.null(maxSig)) {
+                         quantile(dat, .995, na.rm = TRUE) 
+                     } else {
+                         maxSig
+                     })
+            cols <- col.sig
+        }
+        Heatmap(
+            matrix = dat,
+            name = assayNameMap1[w],
+            width = unit(width,"inch"),
+            column_title = assayNameMap2[w],
+            col = colorRamp2(breaks = seq(rng[1], rng[2], length.out = 256),
+                             colors = colorRampPalette(cols)(256)),
+            cluster_rows = FALSE, cluster_columns = FALSE,
+            show_row_names = FALSE, show_column_names = FALSE,
+            # column_names_side = "bottom", 
+            # column_names_max_height = unit(1.5,"inch"),
+            top_annotation = hmBin, show_heatmap_legend = TRUE,
+            heatmap_legend_param = list(color_bar = "continuous"),
+            use_raster = use_raster,
+            na_col = na_col, 
+            ...
+        )
+    }))
+    names(ret)[seq(length(ret) - length(which.plots) + 1L, length(ret))] <- 
+        which.plots
+    # if (doPlot) {
+    #     show(Reduce(ComplexHeatmap::add_heatmap, ret))
+    # }
+  
+    
+    if (doPlot) {
+    heatmap_list <- list()
+    for (i in seq_along(ret)) {
+      heatmap_list[[i]] <- Heatmap(ret[[i]], width = unit(width, "inch"))
+    }
+    combined_heatmap <- draw(heatmap_list, row_gap = unit(1, "mm"))
+    show(combined_heatmap)
+  }
+    
+    invisible(ret)
+}
+
+# panel.abline(h = 5, identifier = "abline2")panel.abline(h = 5, identifier = "abline2")
+m <- top_TFs
+# m <- as.matrix(SEtable[1:30,])
+plotMotifHeatmaps(x = m,
+                  which.plots = c("log2enr", "negLog10Padj"),
+                  width = 1.8,
+                  maxSig = 10,
+                  show_seqlogo = TRUE,
+                  show_motif_GC = FALSE)
+```
+
+
+```{r, eval = FALSE}
+# load("../Data/S4objects/NICHEthesis_SEtable_cellspecific.bin")
+db = "CISBP"
+load(paste0("../Data/S4objects/NICHEthesis_SE_cellspecific_",db,".bin"))
+load(paste0("../Data/S4objects/NICHEthesis_SESimMotif_cellspecific_",db,".bin"))
+load(paste0("../Data/S4objects/NICHEthesis_SEtable_cellspecific_",db,".bin"))
+```
+
+
+We select the promoter/enhancer specific TFs from each cell type, that do not appear in any of the other cell types and that it is expressed in at least 5% of the cells in the Liver Cell Atlas:
+```{r}
+# colCRM <- c(slotNames(NICHE_SEtable),"Total")
+
+CELLS1 <- c("KC","HSC","LSEC","Hep","Neutro","Mono_KG")
+CELLS2 <- c("KC","HSC","LSEC","Hep","Neutro")
+CELLS3 <- c("KC","HSC","LSEC","Hep")
+CELLS4 <- c("KC_KG","Mono_KG")
+CELLS_LIST <- list(CELLS1, CELLS2, CELLS3, CELLS4)
+
+m = 0
+for (CELLS in CELLS_LIST){
+  message("      - ",CELLS)
+  m = m + 1
+  #colCRM <- CELLS
+  for (x in 1:2){
+    message("----------------------------------------------")
+    message(c("promoters","enhancers")[x])
+    X <- c("promoters","enhancers")[x]
+    colCRM <- c()
+    for (cell in CELLS){if (TRUE %in% grepl(X, names(slot(NICHE_SEtable, cell)))){colCRM <- c(colCRM, cell)}}
+    if (length(colCRM) == 0){next}
+    zerorw <- rep(c(0), each = length(colCRM))
+    CRM <- data.frame(matrix(ncol = length(colCRM), nrow = 0))
+    colnames(CRM) <- colCRM
+    for (cell in colCRM){
+      xx <- which(grepl(X,names(slot(NICHE_SEtable, cell))))[1]
+      if (length(slot(NICHE_SEtable, cell)) >= xx){
+        slts <- slot(NICHE_SEtable, cell)
+        snam <- names(slts)
+        for (r in rownames(slts[[xx]])){
+          if (r %in% rownames(CRM)){
+            CRM[r,cell] <- 1
+          }else{
+            CRM[r,] <- zerorw
+            CRM[r,cell] <- 1
+          }
+        }
+      }
+    }
+
+    # Now we calculate in how many cell types does each TF is present
+    CRM$TotalSpec <- rowSums(CRM)
+    CRM <- CRM[order(rownames(CRM)),]
+    CRM <- CRM[order(-CRM$TotalSpec),]
+    assign(paste0("COMM",m,"_",toupper(snam[x])), CRM)
+    
+    # We extract the TFs present exclusively in the enhancers/promoters of each cell type
+    for (cell in colCRM){
+      xx <- which(grepl(X,names(slot(NICHE_SEtable, cell))))[1]
+      if (length(slot(NICHE_SEtable, cell)) >= xx){
+        message(cell)
+        slts <- slot(NICHE_SEtable, cell)
+        snam <- names(slts)
+        
+        if(TRUE){
+          # We add the specificity score to the SEtable
+          SEtable <- slts[[xx]]
+          sel <- CRM[rownames(SEtable),]
+          SEtable <- cbind(SEtable, sel[,-ncol(sel)])
+          SEtable$rank.spec <- abs(sel$TotalSpec - length(CELLS) - 1)
+          SEtable$rank.negLog10Padj <- rank(SEtable$negLog10Padj)
+          SEtable$rank.log2enr <- rank(SEtable$log2enr)
+          SEtable$rank.PercCellsExpr <- rank(SEtable$PercCellsExpr)
+          SEtable$rank.tpm <- rank(SEtable$tpm)
+          # Here we calculate the selection score based on specificity, percentage of expression in cells, log2enrichment and padj value
+          SEtable$selection.score <- SEtable$rank.negLog10Padj * SEtable$rank.log2enr * SEtable$rank.PercCellsExpr * SEtable$rank.spec
+          #SEtable$selection.score <- SEtable$rank.spec * SEtable$rank.log2enr * SEtable$rank.PercCellsExpr
+          # SEtable$selection.score <- SEtable$rank.negLog10Padj * SEtable$rank.log2enr * SEtable$rank.PercCellsExpr
+          SEtable$selection.score <- round((SEtable$selection.score - min(SEtable$selection.score)) / (max(SEtable$selection.score) - min(SEtable$selection.score)),3)
+          SEtable <- SEtable[order(-SEtable$selection.score),]
+          rank.selection <- seq(1,nrow(SEtable))
+          SEtable <- cbind(rank.selection,SEtable)
+          }
+        
+        if(FALSE){
+          # Adding info of the number of different cell types where the TFBM is significantly enriched
+          sel <- CRM[rownames(slts[[x]]),]
+          # Threshold where only TF present in just one cell type are selected
+          sel <- rownames(CRM[CRM$Total == 1 & CRM[,cell] == 1,])
+          sel <- sel[order(rownames(sel)),]
+          SEtable <- slts[[x]][order(rownames(slts[[x]])),]
+          SEtable$NumCellTypes <- sel$Total
+          SEtable <- SEtable[order(SEtable$NumCellTypes, -SEtable$negLog10Padj),]
+        }
+        
+        if(FALSE){
+          # We add the expression data
+          cell_ATLAS <- ATLAS[,grep(cell, colnames(ATLAS))]
+          SEtable$tpm <- rep(0, nrow(SEtable))
+          SEtable$PercCellsExpr <- rep(0, nrow(SEtable))
+          for (r in seq(1,nrow(SEtable))){
+            if(grepl("::", rownames(SEtable)[r])){
+              ABC <- strsplit(rownames(SEtable)[r], split = "::")[[1]]
+    
+              ABCname <- c()
+              for (t in seq(1,length(ABC))){
+                ABCname <- c(ABCname, paste0(toupper(substring(ABC[t], 1, 1)), tolower(substring(ABC[t], 2))))
+              }
+              rownames(SEtable)[r] <- knitr::combine_words(ABCname, sep = "::", and = "")
+              
+              # ABCname <- c("Cebpg(var.2)","Smad1", "Cebpg(var.3)")
+              ABCvar <- c()
+              TFexp <- c()
+              for (t in seq(1,length(ABCname))){
+                TFname <- strsplit(ABCname[t], split = "\\(")[[1]][1]
+                ABCvar <- c(ABCvar, TFname)
+                TFexp <- c(TFexp, unlist(cell_ATLAS[TFname == rownames(cell_ATLAS),], use.names = FALSE))
+              }
+              
+              if (0 %in% TFexp){SEtable$tpm[r] <- 0 ; SEtable$PercCellsExpr[r] <- 0
+              }else{
+                SEtable$tpm[r] <- mean(TFexp[1:length(TFexp) %% 2 != 0])
+                SEtable$PercCellsExpr[r] <- mean(TFexp[1:length(TFexp) %% 2 == 0]) 
+                }
+              
+            }else{
+              TF <- paste0(toupper(substring(rownames(SEtable)[r], 1, 1)), tolower(substring(rownames(SEtable)[r], 2)))
+              TFname <- strsplit(TF, split = "\\(")[[1]][1]
+              TFexp <- unlist(cell_ATLAS[TFname == rownames(cell_ATLAS),], use.names = FALSE)
+              rownames(SEtable)[r] <- TF
+              SEtable$tpm[r] <- TFexp[1]
+              SEtable$PercCellsExpr[r] <- TFexp[2]
+            }
+          }
+        }
+          
+
+        if (dim(SEtable)[1] == 0) {
+          message("ZERO select: ",cell)
+          slot(NICHE_SEtable, cell)[[paste0("SELECT_",snam[xx])]] <- 0
+        }else{
+          message("SEtable select: ",cell)
+          slot(NICHE_SEtable, cell)[[paste0("SELECT_",snam[xx])]] <- SEtable # We save it in the S4 object
+        }
+        
+        # For saving it in the NICHE_SE S4 object:
+        # SEnames <- unname(slot(NICHE_SE,cell)[[snam[x]]]@elementMetadata@listData[["motif.name"]])
+        # NCT <- SEtable$NumCellTypes[match(SEnames, rownames(SEtable))]
+        # NCT[is.na(NCT)] <- 0
+        # slot(NICHE_SE, cell)[[snam[x]]]@assays@data@listData[["NumCellTypes"]] <- NCT
+        save(NICHE_SEtable, ascii=FALSE, file=paste0("../Data/S4objects/NICHEthesis_SEtable_cellspecific_selection_",db,".bin"))
+        
+        
+        if (TRUE){
+          
+          library(ggplot2)
+          library(ggrepel)
+          
+          # Create the plot
+          plot <- ggplot(SEtable, aes(x = log2enr, y = selection.score, fill = tpm, size = PercCellsExpr)) +
+            geom_point(shape = 21, alpha = 0.7, color = "black", stroke = 0.5) +
+            scale_fill_gradientn(colors = c("blue", "red")) +
+            labs(x = "log2enr", y = "selection.score", fill = "tpm", size = "PercCellsExpr") +
+            geom_text_repel(aes(label = rownames(SEtable)), size = SEtable$selection.score * 7 + 3, box.padding = 0.6) +
+            theme_bw() +
+            scale_x_continuous(limits = c(0, 1), expand = expansion(mult = c(0, 0.1)),
+                               breaks = c(0, 0.5, 1), labels = c(0, 0.5, 1)) +
+            scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+            ggtitle(paste0("monaLisa ",cell, " (COMMON ",m,")"))  # Add your desired title here
+          
+          # Save the plot as a high-resolution image
+          ggsave(paste0("../Results/plots/monaLisa_",cell,"_COMM",m,"_Thesis.jpeg"), plot, height = 12, width = 7, dpi = 500)
+        }
+      }
+    }
+  }
+}
+
+#suppressWarnings(rm(AB,TFA,TFB,TFexp, TF, colCRM, zerorw, CRM, slts, snam, x, cell, r, sel, SEtable, NCT, SEnames, m, CELLS, C, CELLS1, CELLS2, CELLS3, CELLS4, COMM4_NA))
+NICHE_SEtable@KC[["promoters_cellspecific"]]
+``` 
+
+
+
+```{r}
+# Load required libraries
+library(ggplot2)
+library(RColorBrewer)
+library(tidyverse)
+
+# Subset the data
+subset_data <- SEtable[1:30, c("log2enr", "tpm")]
+
+# Reshape the data to long format
+subset_data <- subset_data %>%
+  rownames_to_column(var = "genes") %>%
+  gather(key = "variable", value = "value", -genes)
+
+# Define the color palettes for each variable
+color_palette_log2enr <- brewer.pal(9, "Blues")   # Replace "Blues" with your desired palette name
+color_palette_tpm <- brewer.pal(9, "Reds")        # Replace "Reds" with your desired palette name
+
+# Create the heatmap using ggplot
+heatmap <- ggplot(subset_data, aes(x = factor(genes), y = variable)) +
+  geom_tile(aes(fill = value), colour = "white") +
+  scale_fill_gradientn(name = "log2enr", colours = color_palette_log2enr, guide = "legend") +
+  theme_minimal()
+
+# Plot the heatmap
+print(heatmap)
+# Install required packages if not already installed
+install.packages("ggplot2")
+install.packages("RColorBrewer")
+install.packages("tidyverse")
+
+# Load required libraries
+library(ggplot2)
+library(RColorBrewer)
+library(tidyverse)
+
+# Subset the data
+subset_data <- SEtable[1:30, c("log2enr", "tpm")]
+
+# Reshape the data to long format
+subset_data <- subset_data %>%
+  rownames_to_column(var = "genes") %>%
+  gather(key = "variable", value = "value", -genes)
+
+# Define the color palettes for each variable
+color_palette_log2enr <- brewer.pal(9, "Blues")   # Replace "Blues" with your desired palette name
+color_palette_tpm <- brewer.pal(9, "Reds")        # Replace "Reds" with your desired palette name
+
+# Create the heatmap using ggplot
+heatmap <- ggplot(subset_data, aes(x = factor(genes), y = variable)) +
+  geom_tile(aes(fill = value), colour = "white") +
+  scale_fill_gradientn(name = "log2enr", colours = color_palette_log2enr, guide = "legend") +
+  theme_minimal()
+```
+
+
+```{r}
+ggplot(SEtable, aes(x = PercCellsExpr, y = selection.score, color =  log2enr, size = tpm)) +
+  geom_point() +
+  scale_color_gradientn(colors = c("blue", "red")) +
+  labs(x = "PercCellsExpr", y = "selection.score", color = "log2enr", size = "tpm") +
+  geom_text(aes(label = rownames(SEtable)), size = 3, vjust = 1.5) +
+  theme_bw()
+```
+
+```{r}
+library(ggplot2)
+library(ggrepel)
+
+ggplot(SEtable, aes(x = PercCellsExpr, y = selection.score, color = tpm, size = log2enr)) +
+  geom_point() +
+  scale_color_gradientn(colors = c("blue", "red")) +
+  labs(x = "PercCellsExpr", y = "selection.score", color = "tpm", size = "log2enr") +
+  geom_text_repel(aes(label = rownames(SEtable)), size = 3, box.padding = 0.5) +
+  theme_bw()
+
+```
+
+```{r}
+library(ggplot2)
+library(ggrepel)
+
+ggplot(SEtable, aes(x = PercCellsExpr, y = selection.score, color = tpm, size = log2enr)) +
+  geom_point(shape = 21, fill = alpha("white", 0.8), stroke = 0.5) +
+  scale_color_gradientn(colors = c("blue", "red")) +
+  labs(x = "PercCellsExpr", y = "selection.score", color = "tpm", size = "log2enr") +
+  geom_text_repel(aes(label = rownames(SEtable)), size = 3, box.padding = 0.5) +
+  theme_bw()
+
+```
+
+```{r}
+library(ggplot2)
+library(ggrepel)
+
+ggplot(SEtable, aes(x = PercCellsExpr, y = selection.score, color = tpm, size = log2enr)) +
+  geom_point(shape = 21, fill = alpha("cyan", 0.7), stroke = 0.5) +
+  scale_color_gradientn(colors = c("blue", "red")) +
+  labs(x = "PercCellsExpr", y = "selection.score", color = "tpm", size = "log2enr") +
+  geom_text_repel(aes(label = rownames(SEtable)), size = 3, box.padding = 0.5) +
+  theme_bw()
+
+```
+
+```{r}
+library(ggplot2)
+library(ggrepel)
+
+ggplot(SEtable, aes(x = PercCellsExpr, y = selection.score, fill = tpm, size = log2enr)) +
+  geom_point(shape = 21, alpha = 0.7, color = "black", stroke = 0.5) +
+  scale_fill_gradientn(colors = c("blue", "red")) +
+  labs(x = "PercCellsExpr", y = "selection.score", fill = "tpm", size = "log2enr") +
+  geom_text_repel(aes(label = rownames(SEtable)), size = 3, box.padding = 0.5) +
+  theme_bw()
+
+```
+
+```{r}
+library(ggplot2)
+library(ggrepel)
+
+ggplot(SEtable, aes(x = log2enr, y = selection.score, fill = tpm, size =  PercCellsExpr)) +
+  geom_point(shape = 21, alpha = 0.7, color = "black", stroke = 0.5) +
+  scale_fill_gradientn(colors = c("blue", "red")) +
+  labs(x = "log2enr", y = "selection.score", fill = "tpm", size = "PercCellsExpr") +
+  geom_text_repel(aes(label = rownames(SEtable)), size = 4, box.padding = 0.5) +
+  theme_bw() +
+  scale_x_continuous(expand = expansion(mult = c(0.15, 0.15))) +
+  scale_y_continuous(expand = expansion(mult = c(0.15, 0.15)))
+
+```
+
+```{r}
+ library(ggplot2)
+library(ggrepel)
+
+ggplot(SEtable, aes(x = log2enr, y = selection.score, fill = tpm, size = PercCellsExpr)) +
+  geom_point(shape = 21, alpha = 0.7, color = "black", stroke = 0.5) +
+  scale_fill_gradientn(colors = c("blue", "red")) +
+  labs(x = "log2enr", y = "selection.score", fill = "tpm", size = "PercCellsExpr") +
+  geom_text_repel(aes(label = rownames(SEtable)), size = SEtable$selection.score*4+3, box.padding = 0.4) +
+  theme_bw() +
+  scale_x_continuous(limits = c(0, 1), expand = expansion(mult = c(0, 0.1)),
+                     breaks = c(0, 0.5, 1), labels = c(0, 0.5, 1)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1)))
+```
+
+```{r}
+library(ggplot2)
+library(ggrepel)
+
+# Create the plot
+plot <- ggplot(SEtable, aes(x = log2enr, y = selection.score, fill = tpm, size = PercCellsExpr)) +
+  geom_point(shape = 21, alpha = 0.7, color = "black", stroke = 0.5) +
+  scale_fill_gradientn(colors = c("blue", "red")) +
+  labs(x = "log2enr", y = "selection.score", fill = "tpm", size = "PercCellsExpr") +
+  geom_text_repel(aes(label = rownames(SEtable)), size = SEtable$selection.score * 4 + 3, box.padding = 0.4) +
+  theme_bw() +
+  scale_x_continuous(limits = c(0, 1), expand = expansion(mult = c(0, 0.1)),
+                     breaks = c(0, 0.5, 1), labels = c(0, 0.5, 1)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  ggtitle("monaLisa Hep")  # Add your desired title here
+
+
+
+# Save the plot as a high-resolution image
+ggsave("../Results/plots/monaLisa_Hep_Thesis.jpeg", plot, height = 12, width = 9, dpi = 300)
+
+```
+
+
+
+
+
+```{r}
+library(ggplot2)
+library(reshape2)
+
+# Subset the data to the first 30 rows
+subset_data <- SEtable[1:30, c("c", "log2enr", "negLog10Padj", "tpm", "PercCellsExpr", "rank.spec")]
+
+# Normalize the data
+normalized_data <- apply(subset_data, 2, function(x) (x - min(x)) / (max(x) - min(x)))
+
+# Convert the data to long format
+melted_data <- melt(as.matrix(normalized_data))
+
+# Create a color palette for each column
+
+color_palettes <- list(
+  selection.score = c("#F5F9E8", "#2CA02C"),
+  log2enr = c("#F7FCB9", "#006D2C"),
+  negLog10Padj = c("#EDF8B1", "#238B45"),
+  tpm = c("#CCECE6", "#006D2C"),
+  PercCellsExpr = c("#E0F3DB", "#006D2C"),
+  rank.spec = c("#F0F0F0", "#636363")
+)
+
+# Create the heatmap using ggplot
+ggplot(melted_data, aes(x = Var2, y = Var1, fill = value)) +
+  geom_tile(colour = "white") +
+  scale_fill_gradientn(colors = unlist(color_palettes), na.value = "white") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+```
+
+
+
+# Comparison of JAPSAR and CISBP motif databases
+```{r}
+load(paste0("../Data/S4objects/NICHEthesis_SEtable_cellspecific_selection_JASPAR20.bin"))
+NICHE_SEtable_JASPAR20 <- NICHE_SEtable
+load(paste0("../Data/S4objects/NICHEthesis_SEtable_cellspecific_selection_CISBP.bin"))
+NICHE_SEtable_CISBP <- NICHE_SEtable
+
+cell_types <- c("KC","HSC","LSEC","Hep","Neutro","KC_KG","Mono_KG")
+#cell_types <- c("KC")
+XX <- c("SELECT_promoters_cellspecific","SELECT_enhancers_cellspecific")
+x = 2 # enhancers
+for (cell in cell_types){
+  SEtable_CIS <- slot(NICHE_SEtable_CISBP, cell)[[XX[x]]]
+  tf <- rownames(SEtable_CIS)
+  SEtable_CIS <- cbind(tf, SEtable_CIS)
+  rownames(SEtable_CIS) <- seq(1,nrow(SEtable_CIS))
+  
+  SEtable_J20 <- slot(NICHE_SEtable_JASPAR20, cell)[[XX[x]]]
+  tf <- rownames(SEtable_J20)
+  SEtable_J20 <- cbind(tf, SEtable_J20)
+  rownames(SEtable_J20) <- seq(1,nrow(SEtable_J20))
+  
+  for (t in seq(1,nrow(SEtable_J20))){
+    TFabc <- rownames(SEtable_J20)[t]
+    # TFabc <- "Smad2(Var.2)::Rxra::Smad3(Var.3)"
+    if (grepl("::",TFabc) | grepl("\\(",TFabc)){
+    TFabc <- strsplit(TFabc,"::")[[1]]
+    for (a in TFabc){
+      a <- strsplit(a,"\\(")[[1]][1]
+      
+        SEtable_J20 <- rbind(SEtable_J20, SEtable_J20[t,])
+        SEtable_J20$tf[nrow(SEtable_J20)] <- a
+      }
+    }
+  }
+  SEtable_J20 <- SEtable_J20[!grepl("::",SEtable_J20$tf),]
+  SEtable_J20 <- SEtable_J20[!grepl("\\(",SEtable_J20$tf),]
+  SEtable_J20 <- aggregate(. ~ tf, data = SEtable_J20, FUN = mean)
+  
+  SEtable_merge <- merge(SEtable_J20, SEtable_CIS, by = "tf", all.x = TRUE, all.y = TRUE)
+  colnames(SEtable_merge) <- gsub("\\.x", ".J20", colnames(SEtable_merge))
+  colnames(SEtable_merge) <- gsub("\\.y", ".CIS", colnames(SEtable_merge))
+  library(dplyr)
+  # Replace NA values in PercCellsExpr.J20 with corresponding values from PercCellsExpr.CIS and vice versa
+  SEtable_merge$PercCellsExpr.J20 <- coalesce(SEtable_merge$PercCellsExpr.J20, SEtable_merge$PercCellsExpr.CIS)
+  SEtable_merge$PercCellsExpr.CIS <- coalesce(SEtable_merge$PercCellsExpr.CIS, SEtable_merge$PercCellsExpr.J20)
+  # Replace all the NA values for the TFs missing in one of the databases analysis by zeroes
+  SEtable_merge$selection.score.J20[is.na(SEtable_merge$selection.score.J20)] <- 0
+  SEtable_merge$selection.score.CIS[is.na(SEtable_merge$selection.score.CIS)] <- 0
+
+  #plot(SEtable_merge$selection.score.J20, SEtable_merge$selection.score.CIS)
+  
+
+  library(ggplot2)
+  library(ggrepel)
+  
+  # Create a data frame with the required variables
+  df <- data.frame(
+    tf = SEtable_merge$tf,
+    selection.score.J20 = SEtable_merge$selection.score.J20,
+    selection.score.CIS = SEtable_merge$selection.score.CIS,
+    PercCells = SEtable_merge$PercCellsExpr.CIS
+  )
+  
+  # Perform linear regression
+  lm_model <- lm(selection.score.CIS ~ selection.score.J20, data = df)
+  intercept <- round(coef(lm_model)[1], 2)
+  slope <- round(coef(lm_model)[2], 2)
+  
+  # Create the dotplot with regression line
+  plot <- ggplot(df, aes(x = selection.score.J20, y = selection.score.CIS)) +
+    geom_point(aes(size = PercCells), shape = 21, fill = "steelblue", color = "white", stroke = 0.5) +
+    geom_label_repel(aes(label = tf), fill = "white", color = "black", segment.color = "black") +
+    labs(x = "JASPAR2020 Selection Score", y = "CisBP2021 Selection Score", size = "% cells expressed") +
+    theme_minimal() +
+    geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "dotted") +
+    annotate("text", x = max(df$selection.score.J20), y = 0.1,
+             label = paste("y =", intercept, "+", slope, "x",
+                           "\nR-squared:", round(summary(lm_model)$r.squared, 2)),
+             hjust = 1, vjust = 0, color = "black", size = 4) +
+    ggtitle(paste0(cell," by monaLisa - JASPAR2020 vs CisBP2021 database")) +
+    theme(plot.title = element_text(hjust = 0.5))
+  # ,                     segment.size = 0.5, segment.alpha = 0.5, nudge_x = 0.05, nudge_y = 0.05
+  # Save the plot as JPEG with high resolution
+  ggsave(paste0("../Results/plots/",cell,"_JASPAR20vsCisBP21_monaLisa.jpg"), plot, width = 12, height = 8, dpi = 450)
+  
+  print(plot)
+
+}
+```
+
+
+
+
+
+
+# Results
+```{r}
+NICHE_SEtable@KC_KG[["SELECT_enhancers_cellspecific"]]
+NICHE_SEtable@Mono_KG[["SELECT_enhancers_cellspecific"]]
+```
+
+```{r}
+NICHE_SEtable@KC[["SELECT_enhancers_cellspecific"]]
+NICHE_SEtable@KC[["SELECT_promoters_cellspecific"]]
+```
+
+
+```{r}
+NICHE_SEtable@HSC[["SELECT_enhancers_cellspecific"]]
+NICHE_SEtable@LSEC[["SELECT_enhancers_cellspecific"]]
+NICHE_SEtable@Hep[["SELECT_enhancers_cellspecific"]]
+```
+
+```{r}
+NICHE_SEtable@Neutro[["SELECT_enhancers_cellspecific"]]
+```
+
+
+
+
+
+```{r, eval = FALSE}
+# install.packages("VennDiagram")
+library(VennDiagram)
+library(grid)
+
+for (cell in slotNames(NICHE_SEtable)){
+    
+  venn_diagram <- venn.diagram(
+                        x = list(slot(NICHE_SEtable, cell)[["promoters_cellspecific"]]$TFname,
+                                slot(NICHE_SEtable, cell)[["enhancers_cellspecific"]]$TFname),
+                              category.names = c("Promoter", "Enhancers"),
+                              filename = NULL,
+                              fill = c("skyblue", "green"),
+                              alpha = c(1, 1),
+                              cat.col = c("steelblue", "darkgreen"),
+                              cat.cex = 1.2,
+                              margin = 0.1,
+                              cex = 2,                 # Reduce the overall size of the diagram
+                              fontfamily = "sans",       # Set font family
+                              fontface = "bold",         # Set font face
+                              cat.dist = 0.05
+                            )
+  
+  # Display the Venn diagram
+  grid.newpage()
+  grid.draw(venn_diagram)
+  grid.text(
+  label = paste0("Transcription Factors in ",cell, "'s Promoters and Enhancers"),
+  x = 0.5,  # x-coordinate of the title
+  y = 0.9,  # y-coordinate of the title
+  gp = gpar(fontfamily = "sans", cex = 1.2, fontface = "bold")  # Set font family, size, and style
+)
+}
+
+for (cell in slotNames(NICHE_SEtable)){ 
+  # install.packages("ggVennDiagram")
+  library(ggVennDiagram)
+  
+  # List of items
+  x <- list(promoters = slot(NICHE_SEtable, cell)[["promoters_cellspecific"]]$TFname,
+            enhancers = slot(NICHE_SEtable, cell)[["enhancers_cellspecific"]]$TFname)
+  
+  # 2D Venn diagram
+  plot <- ggVennDiagram(x)
+  print(plot)
+}
+```
+
+
+```{r,eval=F}
+SEtable <- data.frame(NICHE_SE@KC[["promoters"]]@assays@data@listData)[63,]
+rownames(SEtable) <- NICHE_SE@KC[["promoters"]]@elementMetadata@listData[["motif.name"]]
+colnames(SEtable) <- names(se@assays@data@listData)
+SEtable[63,] # Nr1h3 (KC, Hep), RBPJ (KC)
+```
+
+
+We look for the common TFs between promoters and enhancers:
+```{bash}
+for cell in KC HSC LSEC Hep Neutro KC_KG Mono_KG
+do
+  prom_file="../Results/MotifEnrichmentSE/${cell}/Thesis_TOPSignEnrich_${cell}_promoters_cellspecific_CISBP.txt"
+  enh_file="../Results/MotifEnrichmentSE/${cell}/Thesis_TOPSignEnrich_${cell}_enhancers_cellspecific_CISBP.txt"
+  comm --output-delimiter="," <(cut -f1 $prom_file | sort) <(cut -f1 $enh_file | sort)| tail -n +2 > "../Results/MotifEnrichmentSE/${cell}/promVSenhanc_${cell}_cellspecific_CISBP.csv"
+  echo -e "${cell},,\nonly_promoters,only_enhancers,common\n$(cat "../Results/MotifEnrichmentSE/${cell}/promVSenhanc_${cell}_cellspecific_CISBP.csv")" > "../Results/MotiftmuxEnrichmentSE/${cell}/promVSenhanc_${cell}_cellspecific_CISBP.csv"
+done
+```
+
+
+# Binned k-mer enrichment analysis
+(https://fmicompbio.github.io/monaLisa/articles/monaLisa.html#binnedkmers)
+
+In some situations it may be beneficial to perform the enrichment analysis in a more ‘unbiased’ way, using k-mers rather than annotated motifs. Here, we will illustrate the process using the same LMR data set as used for the motif enrichment analysis above in section @ref(binned). Similarly to the motif enrichment, this step takes a while to perform, and we can also skip over the next step and load the processed object directly.
+
+When performing enrichment analysis, it may be advantageous to use k-mers rather than annotated motifs in order to be more "unbiased." This step takes a time to complete (e.g. 4-5 mins for 10000 sequences and 6 k-mer)
+```{r, eval=FALSE}
+suppressWarnings(
+for (cell in slotNames(NICHE_Seq)){
+  if (length(slot(NICHE_Seq, cell)) > 0){
+    slts <- slot(NICHE_Seq, cell)
+    snam <- names(slts)
+    for (s in seq(1,length(slts))){
+      message(paste0("\n\t",cell," ",snam[s], " monaLisa k-mer Enrichment analysis...\n"))
+      peakseq <- slts[[snam[s]]]
+      sekmer <- calcBinnedKmerEnr(seqs = peakseq,
+                      background = "genome",
+                      genome = BSgenome.Mmusculus.UCSC.mm39,
+                      BPPARAM = BiocParallel::MulticoreParam(workers = multicoreWorkers(4),
+                                                             RNGseed = 42),
+                      kmerLen = 6,
+                      includeRevComp = TRUE)
+      slot(NICHE_SEKmer, cell)[[snam[s]]] <- sekmer
+      
+      # Save the sekmer in a h5 file
+      dir.create(paste0("../Results/KmerEnrichmentSE/",cell), recursive = TRUE)
+      saveHDF5SummarizedExperiment(sekmer, dir=paste0("../Results/KmerEnrichmentSE/", cell, "/KmerEnr_", cell, "_", snam[s],"_CISBP"), prefix="")
+      
+      # We retrieve k-mer that are significantly enriched and plot the top 30 most significantly TFBMs
+      selkmer <- apply(assay(sekmer, "negLog10Padj"), 1, 
+               function(x) max(abs(x), 0, na.rm = TRUE)) > 4
+      sekmersel <- sekmer[selkmer, ]
+      top_TFs <- head(seSel, 30)
+      PFMsel <- head(rowData(seSel)$motif.pfm, 30)
+      
+      # We calculate the similarity between the enriched K-mers and the previously known and selected TFBS
+      Ksim <- motifKmerSimilarity(x = PFMsel,
+                                  kmers = rownames(sekmersel), 
+                                  BPPARAM = BiocParallel::MulticoreParam(workers = multicoreWorkers(20), RNGseed = 42),
+                                  includeRevComp = TRUE) 
+      slot(NICHE_SEKmerSim, cell)[[snam[s]]] <- Ksim
+      
+      # Save the Ksim in a h5 file
+      dir.create(paste0("../Results/KmerEnrichmentSE/",cell), recursive = TRUE)
+      saveHDF5SummarizedExperiment(Ksim, dir=paste0("../Results/KmerEnrichmentSE/", cell, "/KmerSim_", cell, "_", snam[s],"_CISBP"), prefix="")
+
+      maxwidth <- max(sapply(TFBSTools::Matrix(PFMsel), ncol))
+      seqlogoGrobs <- lapply(PFMsel, seqLogoGrob, xmax = maxwidth)
+      hmSeqlogo <- rowAnnotation(logo = annoSeqlogo(seqlogoGrobs, which = "row"),
+                                 annotation_width = unit(1.5, "inch"), 
+                                 show_annotation_name = FALSE)
+      
+      dir.create(paste0("../Results/KmerEnrichmentSE/",cell,"/Plots"), recursive = TRUE)
+      png(file=paste0("../Results/KmerEnrichmentSE/",cell,"/Plots/KmerEnr_",cell,"_",snam[s], v,"_CISBP.png"),
+           width = 622, height = 532)
+      Heatmap(Ksim, 
+              show_row_names = TRUE, row_names_gp = gpar(fontsize = 8),
+              show_column_names = TRUE, column_names_gp = gpar(fontsize = 8),
+              name = "Similarity", column_title = "Selected TFs and enriched k-mers",
+              col = colorRamp2(c(0, 1), c("white", "red")), 
+              right_annotation = hmSeqlogo)
+      dev.off()
+      
+    }
+  }
+})
+```
+
+
