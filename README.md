@@ -1,4 +1,4 @@
-# Epigenomic Profiling Of The Regulatory Landscape In The Liver Macrophage Niche
+# Epigenomic Profiling Of The Regulatory Landscape In The Liver Macrophage Niche (2023)
 
 Welcome to the GitHub repository for the project "Epigenomic Profiling of the Regulatory Landscape in the Liver Macrophage Niche." This repository contains the comprehensive code and resources developed during the course of this research endeavor. Our project aimed to unravel the intricate regulatory mechanisms within the hepatic macrophage niche, focusing on its major cell types—Kupffer cells (KCs), hepatic stellate cells (HSCs), liver sinusoidal endothelial cells (LSECs), and hepatocytes.
 
