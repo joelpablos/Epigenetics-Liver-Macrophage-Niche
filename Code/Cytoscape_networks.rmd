@@ -1,0 +1,302 @@
+---
+title: "Cytoscape_networks"
+author: "Joel Pablos Martín"
+date: "2023-06-08"
+output: html_document
+---
+
+
+```{r}
+setwd("/srv/data/joelpm/Code")
+getwd()
+```
+```{r, eval=FALSE}
+# To convert the .rmd to .R
+knitr::purl("/srv/data/joelpm/Code/Cytoscape_networks.rmd", documentation=2)
+```
+
+```{r}
+setClass("MyClass_NICHE", slots = c(KC = "list", HSC = "list", LSEC = "list", Hep = "list", Neutro = "list", KC_KG = "list", Mono_KG = "list"))
+NICHE_ananse <- new("MyClass_NICHE", KC = list(), HSC = list(), LSEC = list(), Hep = list(), Neutro = list(), KC_KG = list(), Mono_KG = list())
+```
+
+```{r}
+# Load the data
+cell_types <- c("KC","HSC","LSEC","Hep","Neutro","Mono_KG","KC_KG")
+cell_types <- c("KC","HSC")
+
+dbpx <- "" #dbpx <- "gimmemm39_"
+for (cell in cell_types){
+  slot(NICHE_ananse,cell)[["GRN"]] <-   read.table(paste0("../Results/ANANSE_network/",cell,"/",dbpx,"ANANSE_network_CYTOSCAPE.tsv"), header = TRUE, sep = "\t")
+}
+slot(NICHE_ananse,cell)[["GRN"]]
+```
+
+
+# Creating the specificity ANANSE scores: ananse validation (today 2023/05/13)
+Load specificity scores from the atlas
+```{r}
+setClass("MyClass_NICHE_sort", slots = c(KC = "list", HSC = "list", LSEC = "list", Hep = "list", Neutro = "list", Mono = "list"))
+NICHE_presto <- new("MyClass_NICHE_sort", KC = list(), HSC = list(), LSEC = list(), Hep = list(), Neutro = list(), Mono = list())
+setClass("MyClass_NICHE", slots = c(KC = "list", HSC = "list", LSEC = "list", Hep = "list", Neutro = "list", KC_KG = "list", Mono_KG = "list"))
+NICHE_network <- new("MyClass_NICHE", KC = list(), HSC = list(), LSEC = list(), Hep = list(), Neutro = list(), KC_KG = list(), Mono_KG = list())
+
+cell_types <- c("KC","HSC","LSEC","Hep","Neutro","KC_KG","Mono_KG")
+cell_types <- c("KC","HSC")
+cell_names <- c("Kupffer_cells","Stellate_cells","LSECs","Hepatocytes","Neutrophils","Kupffer_cells","Monocytes")
+cell_names <- c("Kupffer_cells","Stellate_cells")
+
+
+for (c in seq(1,length(cell_types))){
+  cell = cell_types[c]
+  cellnam <- gsub("_KG", "", cell)
+  GRN <- slot(NICHE_ananse, cell)[["GRN"]]
+  presto.cell <- read.table(paste0("../Data/ATLAS/MouseStSt/specificScore/PRESTO/PRESTO_specificScore_", cell_names[c], ".tsv"), header = TRUE, sep = "\t", row.names = 1)
+  allTFs <- unique(GRN$tf)
+  GRN$is.target.a.TF <- ifelse(GRN$target %in% allTFs, "yes", "no")
+  slot(NICHE_presto, cellnam)[["specificScore"]] <- presto.cell
+  slot(NICHE_network, cell)[["GRN_spec"]] <- GRN
+  }
+presto.cell <- slot(NICHE_network, cell)[["GRN_spec"]] 
+presto.cell
+```
+
+
+# Create the specificity score for the entire network
+```{r}
+cell_types <- c("KC","HSC","LSEC","Hep","Neutro","Mono_KG","KC_KG")
+cell_types <- c("KC","HSC")
+
+for (cell in cell_types){
+  cellnam <- gsub("_KG", "", cell)
+  # Load the network and the specificity scores
+  presto.cell <- slot(NICHE_presto, cellnam)[["specificScore"]]
+  GRN <- slot(NICHE_network, cell)[["GRN_spec"]] 
+  # Filter out the target genes that are not specific
+  GRN_spec <- GRN[GRN$target %in% presto.cell$feature,]
+  # merge the netwroks and the specificity socres
+  # GRN_spec <- GRN_spec[order(GRN_spec$target),]
+  # presto.cell <- presto.cell[order(presto.cell$feature),]
+  presto.cell <- presto.cell[,-c(2:11)]
+  GRN_spec <- merge(GRN_spec, presto.cell, by.x = "target", by.y = "feature", all.x = TRUE)
+  GRN_spec <- GRN_spec[, c(2, 1, 3:ncol(GRN_spec))]
+
+  # Calculation of the selection score
+  GRN_spec <- GRN_spec[order(-GRN_spec$prob),]
+  GRN_spec$rank.prob <- seq(nrow(GRN_spec),1)
+  ## rownames(GRN_spec) <- seq(nrow(GRN_spec),1)
+  
+  GRN_spec$selection.score <- (GRN_spec$rank.prob/max(GRN_spec$rank.prob)) * (GRN_spec$rank.specific / max(GRN_spec$rank.specific))
+  GRN_spec$selection.score <- (GRN_spec$selection.score - min(GRN_spec$selection.score)) / (max(GRN_spec$selection.score) - min(GRN_spec$selection.score))
+  GRN_spec <- GRN_spec[order(-GRN_spec$selection.score),]
+  GRN_spec$rank.selection <- seq(1:nrow(GRN_spec))
+  rownames(GRN_spec)<- seq(1:nrow(GRN_spec))
+  print(GRN_spec[1:30,])
+  
+  GRN_spec[, sapply(GRN_spec, function(x) is.numeric(x) && any(x %% 1 != 0))] <- 
+    round(GRN_spec[, sapply(GRN_spec, function(x) is.numeric(x) && any(x %% 1 != 0))], 3)
+  slot(NICHE_network, cell)[["GRN_spec"]] <- GRN_spec
+  
+  write.table(GRN_spec, paste0("../Results/ANANSE_network/",cell,"/ANANSE_network_ALL_finalScore.tsv"), sep="\t", row.names=TRUE, col.names = NA, quote=FALSE)
+  print(plot(GRN_spec$rank.prob, GRN_spec$rank.specific))
+}
+```
+
+```{r, eval = FALSE}
+cell = "HSC"
+slot(NICHE_network, cell)[["GRN_spec"]] <- read.table(paste0("../Results/ANANSE_network/",cell,"/ANANSE_network_ALL_finalScore.tsv"), header = TRUE, sep = "\t", row.names = 1)
+```
+
+
+# Designing the network
+```{r}
+cell_types <- c("KC","HSC","LSEC","Hep","Neutro","Mono_KG","KC_KG")
+cell_types <- c("KC","HSC")
+
+for (cell in cell_types){
+  GRN_spec <- slot(NICHE_network, cell)[["GRN_spec"]]
+  GRN_spec[, sapply(GRN_spec, function(x) is.numeric(x) && any(x %% 1 != 0))] <- 
+    round(GRN_spec[, sapply(GRN_spec, function(x) is.numeric(x) && any(x %% 1 != 0))], 3)
+  GRN_spec
+  
+  # we calculate the outdegree according to the specificity+ananse score (selection.score)...
+  GRN_spec <- GRN_spec[order(-GRN_spec$selection.score),]
+  GRN_top <- GRN_spec[1:100000,]
+  outdegree <- data.frame(table(GRN_top$tf))
+  colnames(outdegree) <- c("tf","outdegree")
+  outdegree <- outdegree[order(-outdegree$outdegree),]
+  rownames(outdegree) <- seq(1,nrow(outdegree))
+  slot(NICHE_network, cell)[["outdegree"]] <- outdegree
+
+  t <- 10 # top of the ranking of outdegree to represnt in the netowrk in cytoscape
+  print(cell)
+  print(outdegree[1:t,])
+  topTFs <- outdegree[1:t,]
+  
+  # ...but we represent and select the significant edges just according to ananse probability/interaction score
+  GRN_spec <- merge(GRN_spec, outdegree, by.x = "tf", by.y = "tf", all.x = TRUE)
+  GRN_spec <- GRN_spec[order(-GRN_spec$prob),]
+  rownames(GRN_spec) <- seq(1,nrow(GRN_spec))
+  slot(NICHE_network, cell)[["GRN_spec_withOutd"]] <- GRN_spec
+  GRN_top <- GRN_spec[1:100000,]
+  
+  # We find the edges connecting the top 10 TFs
+  GRN_TFs <- GRN_top[GRN_top$tf %in% topTFs$tf & GRN_top$target %in% topTFs$tf,]
+  write.table(GRN_TFs, paste0("../Results/ANANSE_network/",cell,"/ANANSE_network_ALL_",t,"TFsnetwork.tsv"), sep="\t", row.names=TRUE, col.names = NA, quote=FALSE)
+}
+```
+
+
+
+
+
+```{r, eval = FALSE}
+cell = "HSC"
+ core_list = c("Nr1h5","Nr1h4","Lhx2","Hand2","Nfib","Rxra") # HSC
+# core_list = c("Rbpj","Nr1h3", "Rxra","Spi1","Spic") # KC
+plot10cyto = c("Rbpj","Nr1h3","Spic","Lhx2","Rxra")
+
+# select cell type network
+GRN <- slot(NICHE_network, cell)[["GRN_spec_withOutd"]]
+GRN$is.target.a.TF <- ifelse(GRN$target %in% allTFs, "yes", "no")
+for (core_node in core_list){
+  # select core node edges
+  GRN_node <- GRN[GRN$tf == core_node,]
+  GRN_node <- GRN_node[order(-GRN_node$selection.score),]
+  rownames(GRN_node) <- seq(1,nrow(GRN_node))
+  write.table(GRN_node, paste0("../Results/ANANSE_network/",cell,"/ANANSE_network_",core_node,"_finalScore.tsv"), sep="\t", row.names=TRUE, col.names = NA, quote=FALSE)
+  if (core_node %in% plot10cyto){
+    M_tf = c(30,5)
+    M_target = c(60,10)
+    GRN10cyto_tf <- head(GRN_node[GRN_node$is.target.a.TF == "yes",],M_tf[1])
+    GRN10cyto_tf <- head(GRN10cyto_tf[order(-GRN10cyto_tf$prob),],M_tf[2])
+    GRN10cyto_target <- head(GRN_node[GRN_node$is.target.a.TF == "no",],M_target[1])
+    GRN10cyto_target <- head(GRN10cyto_target[order(-GRN10cyto_target$prob),],M_target[2])
+    GRN10cyto <- rbind(GRN10cyto_target, GRN10cyto_tf)
+    genes = unique(c(GRN10cyto$tf,GRN10cyto$target))
+    
+    GRN_BIGcyto <- GRN[GRN$tf %in% genes & GRN$target %in% genes,]
+    GRN_BIGcyto <- GRN_BIGcyto[order(-GRN_BIGcyto$prob),]
+    rownames(GRN_BIGcyto) <- seq(1:nrow(GRN_BIGcyto))
+    write.table(GRN10cyto,
+                paste0("../Results/ANANSE_network/",cell,"/ANANSE_GRN",M_tf[2]+M_target[2],"cyto_",core_node,"_finalScore.tsv"), sep="\t", row.names=TRUE, col.names = NA, quote=FALSE)
+    write.table(GRN_BIGcyto,
+                paste0("../Results/ANANSE_network/",cell,"/ANANSE_GRNBIGcyto_",M_tf[2]+M_target[2],"_",core_node,"_finalScore.tsv"), sep="\t", row.names=TRUE, col.names = NA, quote=FALSE)
+  }
+}
+```
+
+
+
+# Differential ANANSE influence networks
+
+```{r}
+
+library(ggplot2)
+library(ggrepel)
+library(extrafont)
+
+setClass("MyClass_NICHE", slots = c(KC = "list", HSC = "list", LSEC = "list", Hep = "list", Neutro = "list", KC_KG = "list", Mono_KG = "list"))
+ANANSEinf_diffNet <- new("MyClass_NICHE", KC = list(), HSC = list(), LSEC = list(), Hep = list(), Neutro = list(), KC_KG = list(), Mono_KG = list())
+ANANSEinf_scores <- new("MyClass_NICHE", KC = list(), HSC = list(), LSEC = list(), Hep = list(), Neutro = list(), KC_KG = list(), Mono_KG = list())
+
+cell_types <- c("KC","HSC","LSEC","Hep","Neutro","KC_KG","Mono_KG")
+cell_types <- c("KC","HSC","LSEC","Hep")
+
+for (cell1 in cell_types){
+  m = 0
+  otherCells <- cell_types[!cell_types %in% cell1]
+  for (cell2 in otherCells){
+    m = m + 1
+    path_diffnet = paste0("../Results/ANANSE_influence/",cell2,"/",cell2,"vs",cell1,"_influence_diffnetwork.tsv")
+    path_scores = paste0("../Results/ANANSE_influence/",cell2,"/",cell2,"vs",cell1,"_influence.tsv")
+    cell1_cut <-  gsub("_KG", "", cell1)
+    cell2_cut <-  gsub("_KG", "", cell2)
+    path_DEGs = paste0("../Data/ATLAS/MouseStSt/specificScore/PRESTO/VS_DEGs/PRESTO_DEGs_",cell2_cut,"vs",cell1_cut,".tsv")
+    if (file.exists(path_diffnet)) {
+      
+      rounding <- function(x) {
+                    if (is.numeric(x)) {
+                      round(x, 3)
+                    } else {
+                      x
+                    }
+                  }
+                  
+      # Round the float columns in the dataframe to 2 decimals
+      diffNet <- read.table(path_diffnet, sep = "\t", header = TRUE)
+      diffNet <- diffNet %>%  mutate_if(is.numeric, rounding)
+      diffNet <- diffNet[order(-diffNet$weight_target),]
+      rownames(diffNet) <- seq(1,nrow(diffNet))
+      diffNet <- diffNet[1:100000,]
+      
+      count_source_names <- function(df) {
+                                    library(dplyr)
+                                    
+                                    df <- df %>%
+                                      group_by(source) %>%
+                                      mutate(outdegree = n()) %>%
+                                      ungroup()
+                                    
+                                    return(df)
+                              }
+      diffNet <- count_source_names(diffNet)
+      diffNet <- diffNet[,c("source","target","weight_target","tf_expression_target","target_expression_target", "tf_activity_target", "outdegree")]
+      
+      if (m == 1){
+        diffNet_prev <- diffNet
+      }else{
+        # Merge the dataframes of
+        diffNet_merge <- merge(diffNet_prev, diffNet, by = c("source", "target"), all = TRUE)
+        diffNet_merge <- rbind(diffNet_prev,diffNet)
+        diffNet_merge <- aggregate(. ~ source + target, data = diffNet_merge, FUN = sum)
+        diffNet_prev <- diffNet_merge
+      }
+      diffNet_out <- diffNet[,c("source","outdegree")]
+      diffNet_out <- aggregate(. ~ source, data = diffNet_out, FUN = first)
+      diffNet_out <- diffNet_out[order(-diffNet_out$outdegree),]
+      rownames(diffNet_out) <- seq(1,nrow(diffNet_out))
+
+      slot(ANANSEinf_diffNet, cell1)[[paste0(cell2,"2",cell1)]] <-  diffNet
+      slot(ANANSEinf_diffNet, cell1)[[paste0(cell2,"2",cell1,"_outdegree")]] <- diffNet_out
+      if (m == length(otherCells))
+        
+        diffNet_merge <- diffNet_merge %>%  mutate_if(is.numeric, ~ ./length(otherCells))
+        slot(ANANSEinf_diffNet, cell1)[[paste0(cell1,"_DiffNet_COMM")]] <- diffNet_merge
+        # We calculate the top with highest outdegree
+        top = 20
+        diffNet_out_merge <- diffNet_merge[,c("source","outdegree")]
+        diffNet_out_merge <- aggregate(. ~ source, data = diffNet_out_merge, FUN = first)
+        diffNet_out_merge <- diffNet_out_merge[order(-diffNet_out_merge$outdegree),]
+        rownames(diffNet_out_merge) <- seq(1,nrow(diffNet_out_merge))
+        slot(ANANSEinf_diffNet, cell1)[[paste0(cell1,"_outdegree_COMM")]] <- diffNet_out_merge
+        # We make the cytoscape network
+        selTFs <- diffNet_out_merge$source[1:top]
+        diffNet_merge_cyto <- diffNet_merge[diffNet_merge$source %in% selTFs & diffNet_merge$target %in% selTFs,]
+        diffNet_merge_cyto <- diffNet_merge_cyto[order(-diffNet_merge_cyto$weight_target),]
+        rownames(diffNet_merge_cyto) <- seq(1,nrow(diffNet_merge_cyto))
+        write.table(diffNet_merge_cyto,
+                paste0("../Results/ANANSE_influence/",cell1,"/ANANSE_infl_GRN",top,"_cyto_",cell1,"_inflScore.tsv"), sep="\t", row.names=TRUE, col.names = NA, quote=FALSE)
+    }
+    if (file.exists(path_scores)) {
+      scores_table <- read.table(path_scores, sep = "\t", header = TRUE)
+      DEGs <- read.table(path_DEGs, sep = "\t", header = TRUE, row.names = 1) # this two lines are not needed since log2FC is already included in ananse influence
+      scores_table_merged <- merge(scores_table, DEGs, by.x = "factor", by.y = "row.names", all.x = TRUE)
+      slot(ANANSEinf_scores, cell1)[[paste0(cell2,"2",cell1)]] <-  scores_table_merged
+      
+    }
+  }
+}
+```
+```
+
+
+
+
+
+
+
+
+
+
+

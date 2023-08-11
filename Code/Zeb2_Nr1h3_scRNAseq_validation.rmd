@@ -1,0 +1,182 @@
+---
+title: "Zeb2_Nr1h3_scRNAseq_validation"
+author: "Joel Pablos Martin"
+date: "2023-05-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+setwd("/home/joelpm/Projects/Code/")
+```
+
+```{r}
+# install.packages("vctrs")
+# install.packages('Seurat')
+# BiocManager::install("DESeq2")
+# BiocManager::install("muscat")
+# install.packages('Matrix')
+# BiocManager::install("GenomicFeatures")
+# BiocManager::install("tximeta")
+# install.packages("na.tools")
+# BiocManager::install("biomaRt")
+# BiocManager::install("MAST")
+# devtools::install_github("immunogenomics/presto")
+library(vctrs)
+library(Seurat)
+library(DESeq2)
+library(Matrix)
+library(GenomicFeatures)
+library(tximeta)
+library(muscat)
+library(na.tools)
+library(biomaRt)
+library(MAST)
+library(presto)
+```
+
+
+## 1. Loading datasets
+```{r}
+mx.Zeb2.wt <- as.matrix(read.table("../Data/ZEB2_Scott/GSM3270889_countTable_Zeb2CreMin.txt.gz", sep="\t", header=TRUE))
+mx.Zeb2.ko <- as.matrix(read.table("../Data/ZEB2_Scott/GSM3270890_countTable_Zeb2CrePlus.txt.gz", sep="\t", header=TRUE))
+mx.Nr1h3.wt <- as.matrix(read.table("../Data/ZEB2_Scott/GSM3270895_countTable_LxRaCreMin.txt.gz", sep="\t", header=TRUE))
+mx.Nr1h3.ko <- as.matrix(read.table("../Data/ZEB2_Scott/GSM3270896_countTable_LxRaCrePlus.txt.gz", sep="\t", header=TRUE))
+
+Seurat.Zeb2.wt <- CreateSeuratObject(counts = mx.Zeb2.wt, project = "Zeb2.wt", min.cells = 3, min.features = 200)
+Seurat.Zeb2.ko <- CreateSeuratObject(counts = mx.Zeb2.ko, project = "Zeb2.ko", min.cells = 3, min.features = 200)
+Seurat.Nr1h3.wt <- CreateSeuratObject(counts = mx.Nr1h3.wt, project = "Nr1h3.wt", min.cells = 3, min.features = 200)
+Seurat.Nr1h3.ko <- CreateSeuratObject(counts = mx.Nr1h3.ko, project = "Nr1h3.ko", min.cells = 3, min.features = 200)
+dim(Seurat.Zeb2.wt)
+dim(Seurat.Zeb2.ko)
+dim(Seurat.Nr1h3.wt)
+dim(Seurat.Nr1h3.ko)
+```
+
+```{r}
+# Merging the Wt and KO together in a same Seurat object per experiment/project
+Seurat.Zeb2 <- merge(x = Seurat.Zeb2.wt, y = Seurat.Zeb2.ko, add.cell.ids = c("WT", "KO"), project = "Zeb2")
+Seurat.Nr1h3 <- merge(x = Seurat.Nr1h3.wt, y = Seurat.Nr1h3.ko, add.cell.ids = c("WT", "KO"), project = "Nr1h3")
+
+head(colnames(Seurat.Zeb2))
+tail(colnames(Seurat.Zeb2))
+
+head(colnames(Seurat.Nr1h3))
+tail(colnames(Seurat.Nr1h3))
+```
+
+```{r}
+# Normalization and scaling of the data 
+Seurat.Zeb2 <- NormalizeData(Seurat.Zeb2, normalization.method = "LogNormalize", scale.factor = 10000)
+Seurat.Zeb2 <- ScaleData(Seurat.Zeb2, features = rownames(Seurat.Zeb2))
+Seurat.Nr1h3 <- NormalizeData(Seurat.Nr1h3, normalization.method = "LogNormalize", scale.factor = 10000)
+Seurat.Nr1h3 <- ScaleData(Seurat.Nr1h3, features = rownames(Seurat.Nr1h3))
+```
+```{r}
+levels(Seurat.Zeb2)
+levels(Seurat.Nr1h3)
+```
+
+
+```{r}
+library(dplyr)
+# Calculating DEGs
+## -----------------------------------------------------------------------------------------------------------
+## Zeb2 knock-out
+# DEG.Zeb2 <- FindMarkers(Seurat.Zeb2, ident.1 = "Zeb2.wt", ident.2 = "Zeb2.ko", logfc.threshold = 0.5, min.diff.pct = 0.2, test.use =  "MAST", max.cells.per.ident = 200)
+DEG.Zeb2 <- FindMarkers(Seurat.Zeb2, ident.1 = "Zeb2.wt", ident.2 = "Zeb2.ko", test.use =  "MAST", logfc.threshold = 0, min.pct = 0)
+DEG.Zeb2 <- DEG.Zeb2[order(DEG.Zeb2$p_val_adj, abs(DEG.Zeb2$avg_log2FC)),]
+DEG.Zeb2
+write.table(DEG.Zeb2, "../Results/Zeb2_Nr1h3_KO/DEGs/DEG_Zeb2KOvsWT.tsv", sep="\t", row.names=TRUE, col.names = NA, quote=FALSE)
+# DEG.Zeb2 <- read.table("../Results/Zeb2_Nr1h3_KO/DEGs/DEG_Zeb2KOvsWT.tsv", sep="\t", header=TRUE, row.names=1)
+
+
+DEG.Zeb2 <- DEG.Zeb2[order(-abs(DEG.Zeb2$avg_log2FC)),]
+DEG.Zeb2
+write.table(DEG.Zeb2, "../Results/Zeb2_Nr1h3_KO/DEGs/DEG_Zeb2KOvsWT_log2FCsort.tsv", sep="\t", row.names=TRUE, col.names = NA, quote=FALSE)
+
+
+DEG.Zeb2.FDR01 <- DEG.Zeb2[DEG.Zeb2$p_val_adj < 0.01,]
+dim(Seurat.Zeb2)
+dim(DEG.Zeb2)
+dim(DEG.Zeb2.FDR01)
+message(" % DEGs (",nrow(DEG.Zeb2.FDR01),") FDR < 0.01 Zeb2: ", 100*nrow(DEG.Zeb2.FDR01)/nrow(DEG.Zeb2),"")
+
+## -----------------------------------------------------------------------------------------------------------
+## Nr1h3 kncok-out
+DEG.Nr1h3 <- FindMarkers(Seurat.Nr1h3, ident.1 = "Nr1h3.wt", ident.2 = "Nr1h3.ko", logfc.threshold = 0, min.diff.pct = 0, test.use =  "MAST")
+DEG.Nr1h3 <- DEG.Nr1h3[order(DEG.Nr1h3$p_val_adj, abs(DEG.Nr1h3$avg_log2FC)),]
+DEG.Nr1h3
+write.table(DEG.Nr1h3, "../Results/Zeb2_Nr1h3_KO/DEGs/DEG_Nr1h3KOvsWT.tsv", sep="\t", row.names=TRUE, col.names = NA, quote=FALSE)
+# DEG.Nr1h3 <- read.table("../Results/Zeb2_Nr1h3_KO/DEGs/DEG_Zeb2KOvsWT.tsv", sep="\t", header=TRUE, row.names=1)
+
+
+DEG.Nr1h3 <- DEG.Nr1h3[order(-abs(DEG.Nr1h3$avg_log2FC)),]
+DEG.Nr1h3
+write.table(DEG.Nr1h3, "../Results/Zeb2_Nr1h3_KO/DEGs/DEG_Nr1h3KOvsWT_log2FCsort.tsv", sep="\t", row.names=TRUE, col.names = NA, quote=FALSE)
+
+DEG.Nr1h3.FDR01 <- DEG.Nr1h3[DEG.Nr1h3$p_val_adj < 0.01,]
+dim(Seurat.Nr1h3)
+dim(DEG.Nr1h3)
+dim(DEG.Nr1h3.FDR01)
+message(" % DEGs  (",nrow(DEG.Nr1h3.FDR01),") FDR < 0.01 Nr1h3: ", 100*nrow(DEG.Nr1h3.FDR01)/nrow(DEG.Nr1h3),"")
+```
+
+```{r}
+DEG.Zeb2$ABS_pct1_pct2 <- abs(DEG.Zeb2$pct.1 - DEG.Zeb2$pct.2)
+DEG.Zeb2.FDR01 <- DEG.Zeb2[order(DEG.Zeb2$p_val_adj)[1:1000],]
+plot(DEG.Zeb2.FDR01$p_val_adj, DEG.Zeb2.FDR01$ABS_pct1_pct2)
+```
+
+
+```{r}
+DoHeatmap(object = Seurat.Nr1h3, features = rownames(DEG.Nr1h3)[1:30], label = TRUE)
+```
+
+```{r}
+# Check if the features are present in the RNA assay of the Seurat object
+features <- rownames(DEG.Nr1h3)[1:30]
+available_features <- intersect(features, rownames(Seurat.Nr1h3@assays$RNA@data))
+
+# Display the available features
+print(available_features)
+
+# Generate the heatmap using the available features
+DoHeatmap(object = Seurat.Nr1h3, features = available_features, label = TRUE)
+```
+
+```{r}
+Seurat.Nr1h3$genotype <- factor(Seurat.Nr1h3@meta.data[["orig.ident"]], levels = c("Nr1h3.wt", "Nr1h3.ko"))
+features <- rownames(DEG.Nr1h3)[1:30]
+genes <- c("Sdc3", "Cd74", "Lgmn", "Pltp", "-Tyrobp", "-Hmox1", "Mafb", "-Aif1", "-Mpeg1")
+genes_up <- c("Sdc3", "Lgmn", "Pltp", "Mafb")
+genes_down <- c("Cd74")
+downreg.Nr1h3 <-  c("Sdc3", "Apoc1", "Ccl6", "Il18bp", "Cd5l")
+upreg.Nr1h3 <- c("Cd74", "H2-Eb1", "H2-Ab1", "H2-Aa", "Vcam1")
+genes <- c("Sdc3", "Cd74", "Lgmn", "Pltp", "Tyrobp", "Vcam1", "Apoc1", "Il18bp", "Cd5l", "Kcna2")
+
+# Ridge plots - from ggridges. Visualize single cell expression distributions in each cluster
+# DoHeatmap(object = Seurat.Nr1h3, features = rownames(DEG.Nr1h3)[1:30], label = TRUE)
+RidgePlot(Seurat.Nr1h3, features = genes, ncol = 3, group.by = "genotype")
+# Violin plot - Visualize single cell expression distributions in each cluster
+VlnPlot(Seurat.Nr1h3, features = genes_up, group.by = "genotype")
+VlnPlot(Seurat.Nr1h3, features = genes_down, group.by = "genotype")
+VlnPlot(Seurat.Nr1h3, features = downreg.Nr1h3, group.by = "genotype")
+VlnPlot(Seurat.Nr1h3, features = upreg.Nr1h3, group.by = "genotype")
+
+VlnPlot(Seurat.Nr1h3, features = genes, ncol = 5, group.by = "genotype")
+Seurat.Nr1h3$genotype <- factor(Seurat.Nr1h3@meta.data[["orig.ident"]], levels = c("Nr1h3.ko", "Nr1h3.wt"))
+RidgePlot(Seurat.Nr1h3, features = genes, ncol = 5, group.by = "genotype")
+```
+
+
+```{r}
+Seurat.Nr1h3 <- RunPCA(Seurat.Nr1h3, features = Seurat.Nr1h3@assays[["RNA"]]@counts@Dimnames[[1]])
+Seurat.Nr1h3 <- RunUMAP(Seurat.Nr1h3, dims = 1:10, n.neighbors = 30)
+FeaturePlot(Seurat.Nr1h3, features = genes, ncol = 5)
+```
+
+

@@ -1,0 +1,601 @@
+---
+title: "ANANSE_validation_qPCR"
+author: "Joel Pablos Martin"
+date: "2023-04-07"
+output: html_document
+---
+
+
+```{r}
+setwd("/srv/data/joelpm/Code")
+```
+
+```{r}
+setClass("MyClass_NICHE", slots = c(KC = "list", HSC = "list", LSEC = "list", Hep = "list", Neutro = "list"))
+NICHE_qPCR <- new("MyClass_NICHE", KC = list(), HSC = list(), LSEC = list(), Hep = list(), Neutro = list())
+```
+
+```{r}
+#Load the data
+#cell_types <- c("KC","HSC","LSEC","Hep","Neutro","Mono_KG","KC_KG")
+cell_types <- c("HSC")
+
+dbpx <- "" #dbpx <- "gimmemm39_"
+for (cell in cell_types){
+  slot(NICHE_qPCR,cell)[["GRN"]] <-   read.table(paste0("../Results/ANANSE_network/",cell,"/",dbpx,"ANANSE_network_CYTOSCAPE.tsv"), header = TRUE, sep = "\t")
+}
+slot(NICHE_qPCR,cell)[["GRN"]]
+```
+
+# qPCR validation : today 2023/05/13
+Load specificity scores from the atlas
+```{r}
+cell = "Stellate_cells"
+presto.cell <- read.table(paste0("../Data/ATLAS/MouseStSt/specificScore/PRESTO/PRESTO_specificScore_", cell, ".tsv"), header = TRUE, sep = "\t", row.names = 1)
+presto.cell
+```
+
+
+```{r}
+cell = "HSC"
+GRN <- slot(NICHE_qPCR, cell)[["GRN"]]
+allTFs <- unique(GRN$tf)
+GRN$is.target.a.TF <- ifelse(GRN$target %in% allTFs, "yes", "no")
+```
+
+
+```{r}
+core_node = "Rxra"
+GRN_node <- GRN[GRN$tf == core_node,]
+GRN_node
+```
+
+Calculating the final score by merging the probability and the specificity ranked scores
+```{r}
+GRN_node <- GRN_node[GRN_node$target %in% presto.cell$feature,]
+GRN_node <- GRN_node[order(GRN_node$target),]
+presto.cell <- presto.cell[order(presto.cell$feature),]
+GRN_node <- cbind(GRN_node, rank.pct_diff = presto.cell$rank.pct_diff, rank.FC = presto.cell$rank.FC, specif.score = presto.cell$specif.score, rank.specific = presto.cell$rank.specific)
+
+# Calculation of the selection score
+GRN_node <- GRN_node[order(-GRN_node$prob),]
+GRN_node$rank.prob <- seq(nrow(GRN_node),1)
+rownames(GRN_node) <- seq(nrow(GRN_node),1)
+
+GRN_node$selection.score <- GRN_node$rank.prob * GRN_node$rank.specific
+GRN_node$selection.score <- (GRN_node$selection.score - min(GRN_node$selection.score)) / (max(GRN_node$selection.score) - min(GRN_node$selection.score))
+GRN_node <- GRN_node[order(-GRN_node$selection.score),]
+GRN_node$rank.selection <- seq(1:nrow(GRN_node))
+rownames(GRN_node)<- seq(1:nrow(GRN_node))
+GRN_node
+
+write.table(GRN_node, paste0("../Results/ANANSE_network/",cell,"/ANANSE_network_",core_node,"_finalScore.tsv"), sep="\t", row.names=TRUE, col.names = NA, quote=FALSE)
+plot(GRN_node$rank.prob, GRN_node$rank.specific)
+```
+
+List of TFs and target for qPCR validation
+```{r}
+GRN_node[1:30,c(1,2,3,8,10,12)]
+GRN_node[GRN_node$is.target.a.TF == "no",][1:30,c(1,2,3,8,10,12)]
+node_TFs <- GRN_node[GRN_node$is.target.a.TF == "yes",][1:30,c(1,2,3,8,10,12)]
+# rownames(node_TFs) <- seq(1,nrow(node_TFs))
+node_TFs
+
+
+node_TFs[node_TFs$target == "Spic",]
+GRN_node[GRN_node$target == "Spic",]
+GRN_node[GRN_node$target == "Tfec",]
+
+```
+
+```{r}
+library(ggplot2)
+library(ggrepel)
+
+highlight_genes <- c("Clec4f", "Spi1", "C1qc", "Cd5l", "Spic", "Nr1h3", "Rbpj")
+highlight_genes <- unique(c("Clec4f", "Spi1", "C1qc", "Cd5l", "Spic", "Nr1h3", "Rbpj", head(GRN_node$target, 8)))
+highlighted_rows <- which(GRN_node$target %in% highlight_genes)
+
+plot_data <- data.frame(x = GRN_node$rank.prob, y = GRN_node$rank.specific, gene = GRN_node$target)
+
+plot <- ggplot(plot_data, aes(x, y)) +
+  geom_point(color = "black", size = 0.5) +
+  geom_point(data = plot_data[highlighted_rows, ], aes(x, y), color = "red", size = 1) +
+  geom_label_repel(data = plot_data[highlighted_rows, ], aes(label = gene), color = "red", nudge_x = 0.2, nudge_y = 0.1, max.overlaps = Inf) +
+  xlab("rank.prob") +
+  ylab("rank.specific") +
+  ggtitle("Kupffer Cells final score ranking") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5), plot.title.position = "plot")
+
+plot
+ggsave(paste0("../Results/plots/specific_score/ananse_",core_node,"_finalScore_",cell,".jpg"), plot, dpi = 300)
+```
+
+
+
+# Past analysis
+
+```{r}
+cell_types <- c("KC")
+for (cell in cell_types){
+  GRN <- slot(NICHE_qPCR,cell)[["GRN"]]
+  filtrows <- subset(GRN, prob > 0.60 & tf_expression > 0.75 & target_expression > 0.80 & weighted_binding > 0.50)
+  filtrows <- subset(GRN, prob > 0.9 & tf_expression > 0.7 & target_expression > 0.70 & weighted_binding > 0.50)
+  message(dim(filtrows)*100/dim(GRN))
+  indegree <- table(filtrows$target)
+  outdegree <- table(filtrows$tf)
+  # transcription factor degrees
+  in_tf <- as.vector(indegree[GRN$tf])
+  in_tf[is.na(in_tf)] <- 0
+  norm_in_tf = round((in_tf - min(in_tf)) / (max(in_tf) - min(in_tf)),4)
+  out_tf <- as.vector(outdegree[GRN$tf])
+  out_tf[is.na(out_tf)] <- 0
+  norm_out_tf = round((out_tf - min(out_tf)) / (max(out_tf) - min(out_tf)),4)
+  # target genes degrees
+  in_target <- as.vector(indegree[GRN$target])
+  in_target[is.na(in_target)] <- 0
+  norm_in_target = round((in_target - min(in_target)) / (max(in_target) - min(in_target)),4)
+  out_target <- as.vector(outdegree[GRN$target])
+  out_target[is.na(out_target)] <- 0
+  norm_out_target = round((out_target - min(out_target)) / (max(out_target) - min(out_target)),4)
+
+  message(mean(in_tf),' ',mean(out_tf),' ',mean(in_target),' ',mean(out_target))
+  message(mean(norm_in_tf),' ',mean(norm_out_tf),' ',mean(norm_in_target),' ',mean(norm_out_target))
+  
+  GRN_inout <- cbind(GRN,norm_in_tf,norm_out_tf,norm_in_target,norm_out_target)
+  slot(NICHE_qPCR,cell)[["GRN_inout"]] <- GRN_inout
+  GRN_inout
+  # slot(NICHE_qPCR,cell)[["GRN_filteredges"]] <-  
+}
+# Rbpj
+GRN_tf_Rbpj <- GRN_inout[GRN_inout$tf == 'Rbpj',]
+GRN_tf_Rbpj <- GRN_tf_Rbpj[order(GRN_tf_Rbpj$prob, decreasing = T),]
+norm_GRN_tf_Rbpj <- apply(GRN_tf_Rbpj[,8:11], 2, function(x) (x - min(x)) / (max(x) - min(x)))
+norm_GRN_tf_Rbpj <- cbind(GRN_tf_Rbpj[,1:7],norm_GRN_tf_Rbpj)
+norm_GRN_tf_Rbpj
+norm_GRN_tf_Rbpj$score <- 0.5 * norm_GRN_tf_Rbpj$prob + 0.5 * (1-norm_GRN_tf_Rbpj$norm_in_target)
+norm_GRN_tf_Rbpj <- norm_GRN_tf_Rbpj[order(norm_GRN_tf_Rbpj$score, decreasing = TRUE),]
+norm_GRN_tf_Rbpj
+```
+
+
+
+```{r}
+library(tibble)
+
+GRN_tf_Rbpj <- GRN_inout[GRN_inout$tf == 'Rbpj',]
+GRN_tf_Rbpj <- GRN_tf_Rbpj[order(GRN_tf_Rbpj$prob, decreasing = TRUE),]
+
+norm_GRN_tf_Rbpj <- GRN_tf_Rbpj[, 8:11]
+for (col in names(norm_GRN_tf_Rbpj)) {
+  col_range <- max(norm_GRN_tf_Rbpj[[col]]) - min(norm_GRN_tf_Rbpj[[col]])
+  if (col_range == 0) {
+    norm_GRN_tf_Rbpj[[col]] <- ifelse(is.nan(norm_GRN_tf_Rbpj[[col]]), NaN, 1)
+  } else {
+    norm_GRN_tf_Rbpj[[col]] <- (norm_GRN_tf_Rbpj[[col]] - min(norm_GRN_tf_Rbpj[[col]])) / col_range
+  }
+}
+
+norm_GRN_tf_Rbpj <- tibble::rownames_to_column(norm_GRN_tf_Rbpj, var = "target")
+norm_GRN_tf_Rbpj <- cbind(GRN_tf_Rbpj[, 1:2], norm_GRN_tf_Rbpj)
+norm_GRN_tf_Rbpj
+```
+
+
+```{r}
+# Nr1h3
+GRN_tf_Nr1h3 <- GRN_inout[GRN_inout$tf == 'Nr1h3',]
+GRN_tf_Nr1h3 <- GRN_tf_Nr1h3[order(GRN_tf_Nr1h3$prob, decreasing = T),]
+GRN_tf_Nr1h3
+which(GRN_tf_Nr1h3$target == KO_Nr1h3)
+KO_Nr1h3 <- c('Clec4f','Cx3cr1','Acp5','Cd5l','Kcna2','Il18bp','Arg2')
+KGlass_Nr1h3 <- GRN_tf_Nr1h3[GRN_tf_Nr1h3$target %in% KO_Nr1h3,]
+KGlass_Nr1h3
+which(GRN_tf_Nr1h3$target %in% KO_Nr1h3)
+
+# Normalization Nr1h3
+norm_GRN_tf_Nr1h3 <- apply(GRN_tf_Nr1h3[,8:11], 2, function(x) (x - min(x)) / (max(x) - min(x)))
+norm_GRN_tf_Nr1h3 <- cbind(GRN_tf_Nr1h3[,1:7],norm_GRN_tf_Nr1h3)
+norm_GRN_tf_Nr1h3$score <- 0.5 * norm_GRN_tf_Nr1h3$prob + 0.5 * (1-norm_GRN_tf_Nr1h3$norm_in_target)
+norm_GRN_tf_Nr1h3 <- norm_GRN_tf_Nr1h3[order(norm_GRN_tf_Nr1h3$score, decreasing = TRUE),]
+norm_GRN_tf_Nr1h3
+which(norm_GRN_tf_Nr1h3$target %in% KO_Nr1h3)
+
+# Smad4
+GRN_tf_Smad4 <- GRN_inout[GRN_inout$tf == 'Smad4',]
+GRN_tf_Smad4 <- GRN_tf_Smad4[order(GRN_tf_Smad4$prob, decreasing = T),]
+GRN_tf_Smad4
+KO_Smad4 <- c('Clec4f','Nr1h3','Id3','Spic','Cx3cr1')
+which(GRN_tf_Smad4$target == KO_Smad4)
+KGlass_Smad4 <- GRN_tf_Smad4[GRN_tf_Smad4$target %in% KO_Smad4,]
+KGlass_Smad4
+which(GRN_tf_Smad4$target %in% KO_Smad4)
+```
+
+
+```{r}
+library(gplots)  # Load the gplots library
+
+# Convert the data frame into a matrix
+mat <- data.matrix(KGlass_Nr1h3[, 3:7])  # Select columns 3 to 7 as the data for the heatmap
+rownames(mat) <- KGlass_Nr1h3$target
+
+mat_Nr1h3 <- data.matrix(GRN_tf_Nr1h3[, 3:7])
+rownames(mat_Nr1h3) <- GRN_tf_Nr1h3$target
+# Create the heatmap
+heatmap.2(mat, dendrogram = "both", Rowv = TRUE, Colv = FALSE, col = heat.colors(50))
+heatmap.2(mat_Nr1h3, dendrogram = "both", Rowv = TRUE, Colv = FALSE, col = heat.colors(50))
+# Heatmap 
+heatmap(GRN_tf_Nr1h3, aes(GRN_tf_Nr1h3$tf, GRN_tf_Nr1h3$target, fill= GRN_tf_Nr1h3$prob)) + 
+  geom_tile()
+
+# Library
+library(ggplot2)
+
+# Dummy data
+
+
+```
+
+# Load packages
+```{r}
+# install.packages("igraph")
+# install.packages("leiden")
+library(leiden)
+library(Seurat)
+library(igraph)
+```
+
+
+```{r}
+library(igraph)
+g <- graph_from_data_frame(norm_GRN_tf_Rbpj, directed=TRUE)
+edge_list <- as_edgelist(g)
+g <- graph.data.frame(norm_GRN_tf_Rbpj, directed=TRUE)
+weights <- sapply(E(g), function(e) {norm_GRN_tf_Rbpj$prob[which(norm_GRN_tf_Rbpj$tf == V(g)[e]$name & norm_GRN_tf_Rbpj$target == V(g)[e]$name)]})
+
+cat("Number of edges in graph:", ecount(g), "\n")
+cat("Length of weights vector:", length(weights), "\n")
+
+cat("Node names in graph:", head(V(g)$name), "\n")
+cat("Unique values in 'tf' column of 'norm_GRN_tf_Rbpj':", head(unique(norm_GRN_tf_Rbpj$tf)), "\n")
+cat("Unique values in 'target' column of 'norm_GRN_tf_Rbpj':", head(unique(norm_GRN_tf_Rbpj$target)), "\n")
+
+cat("Nodes in graph but not in 'norm_GRN_tf_Rbpj':", setdiff(V(g)$name, unique(norm_GRN_tf_Rbpj$target)), "\n")
+```
+
+# Creating input GRN for CYTOSCAPE
+## (old version)
+Too many edges are represented with this code because the threshold is always arbitrary
+```{r}
+
+target_names <- unique(GRN$target)
+
+# Check that all target names are in the graph
+cat("Target nodes in graph:", head(target_names[target_names %in% V(g)$name]), "\n")
+
+# Check that all graph nodes are in the target names
+cat("Graph nodes in target names:", head(V(g)$name[V(g)$name %in% target_names]), "\n")
+
+# Extract weights from data frame
+# Extract weights from data frame
+# Extract weights from data frame
+weights <- sapply(E(g), function(e) {
+  tf_name <- V(g)[tail(e)]$name
+  target_name <- V(g)[head(e)]$name
+  prob <- norm_GRN_tf_Rbpj$prob[norm_GRN_tf_Rbpj$tf == tf_name & norm_GRN_tf_Rbpj$target == target_name]
+  if (length(prob) == 0) {
+    warning(paste("No weight found for edge", tf_name, "->", target_name))
+    prob <- 0
+  }
+  prob
+})
+sum(weights)
+
+
+# Check that weights were extracted correctly
+cat("Sample weights:", head(weights), "\n")
+
+```
+
+
+
+## Expression data: DEGs against all Liver Cell Atlas
+https://www.cell.com/cell/pdf/S0092-8674(21)01481-1.pdf
+```{r}
+# load the data
+cell_types <- c("KC","HSC","LSEC","Hep","Neutro")
+# define Min-Max normalization function
+min_max_norm <- function(x) {(x - min(x)) / (max(x) - min(x))}
+
+for (cell in cell_types){
+  if (cell == "HSC"){
+    DEGs <- read.table(paste0("../Data/ATLAS/MouseStSt/DEGsAtlas/DEGsCD45neg_mouse_",cell,".tsv"), header = TRUE, sep = "\t")
+  }else{
+    DEGs <- read.table(paste0("../Data/ATLAS/MouseStSt/DEGsAtlas/DEGsAll_mouse_",cell,".tsv"), header = TRUE, sep = "\t")
+  }
+  DEGs$score_propdeANDlfc <- rowMeans(data.frame(min_max_norm(DEGs$lfc_mean),min_max_norm(DEGs$proba_de)))
+  DEGs <- DEGs[order(DEGs$score_propdeANDlf, decreasing = TRUE),]
+  rownames(DEGs) <- seq(1:dim(DEGs)[1])
+  colnames(DEGs)[1] <- "gene"
+  DEGs <- DEGs[c('gene','score_propdeANDlfc', 'proba_de', 'lfc_mean')]
+  
+  slot(NICHE_qPCR,cell)[["DEGs"]] <- DEGs
+}
+NICHE_qPCR@KC[["DEGs"]]
+```
+
+
+
+## GRN pre-processing for visualization (new version)
+First, for the core gene (e.g. Rbpj) we take the 10 out-edges. We take the top 10-5 genes for each 1st level node. For TFs we take the top 5 TFs controlling its expression and the top 5 genes they control.
+```{r}
+cell = "KC"
+GRN <- slot(NICHE_qPCR,cell)[["GRN"]]
+dim(GRN)
+head(GRN)
+core_node = "Rbpj" # select the core gene for the GRN visualization
+
+allTFs <- unique(sort(GRN$tf))
+alltargets <- unique(sort(GRN$target))
+
+length(allTFs)
+length(alltargets)
+length(allTFs)*length(alltargets)
+dim(GRN)
+# add extra column indicating if the target_gene is a TF or a normal gene
+GRN$is.target.a.TF <- ifelse(GRN$target %in% allTFs, "yes", "no")
+# Normalize the TF prob values by TF group
+library(dplyr)
+GRN_TFnorm <- GRN %>%
+  group_by(tf) %>%
+  mutate(prob = (prob - min(prob)) / (max(prob) - min(prob))) %>%
+  ungroup() 
+
+GRN_TFnorm <- GRN_TFnorm[order(GRN_TFnorm$prob, decreasing = TRUE),]
+
+summary(GRN_TFnorm[GRN_TFnorm$tf == core_node,])
+GRN_TFnorm[GRN_TFnorm$tf == core_node,]
+```
+
+Now we calculate the DEG score combining the probability of the edge with the probability of the target gene to be differential expressed (DE) from respect to all the liver cells and the log2FC expression respect all those cells:
+```{r}
+# DEGs score
+DEGs <- slot(NICHE_qPCR,cell)[["DEGs"]]
+GRN_TFnorm$target.propdeANDlfc <- ifelse(GRN_TFnorm$target %in% DEGs$gene, DEGs$score_propdeANDlfc[match(GRN_TFnorm$target, DEGs$gene)], 0)
+
+# create a score between probability of ANANSE and DEGs
+GRN_TFnorm$score.DEGsel <- rowMeans(GRN_TFnorm[, c("prob", "target.propdeANDlfc")])
+GRN_TFnorm <- GRN_TFnorm[order(GRN_TFnorm$score.DEGsel, decreasing = TRUE), ]
+
+# we normalize the score.DEGsel per TF group
+library(dplyr)
+GRN_TFnorm <- GRN_TFnorm %>%
+  group_by(tf) %>%
+  mutate(score.DEGsel = (score.DEGsel - min(score.DEGsel)) / (max(score.DEGsel) - min(score.DEGsel))) %>%
+  ungroup() 
+
+summary(GRN_TFnorm[GRN_TFnorm$tf == core_node,])
+GRN_TFnorm[GRN_TFnorm$tf == core_node,]
+```
+
+```{r}
+# create metadata table with info of which gene is TF and which one not
+metadata.GRN_TFnorm <- data.frame(gene = alltargets, 
+                 is.TF = ifelse(alltargets %in% allTFs, "yes", "no"),
+                 target.propdeANDlfc = ifelse(alltargets %in% DEGs$gene, DEGs$score_propdeANDlfc[match(alltargets, DEGs$gene)], 0))
+
+metadata.GRN_TFnorm <- metadata.GRN_TFnorm[order(metadata.GRN_TFnorm$is.TF, metadata.GRN_TFnorm$target.propdeANDlfc),]
+head(metadata.GRN_TFnorm)
+tail(metadata.GRN_TFnorm)
+
+```
+
+## 1. TFs-->Core-->Genes NETWORK
+First, we create the network with top 10 TFs controlling the core_node / core TF (e.g. Rbpj) and the top 10 genes controlled by this core TF.
+```{r}
+dim(GRN_TFnorm)
+topA = 15
+# genes whose expression is activated by the core TF
+from_core <- GRN_TFnorm[GRN_TFnorm$tf == core_node,]
+from_core <- from_core[order(from_core$prob, decreasing = TRUE)[1:topA],]
+from_core
+# TFs activating the core TF expression
+to_core <- GRN_TFnorm[GRN_TFnorm$target == core_node,]
+to_core <- to_core[order(to_core$prob, decreasing = TRUE)[1:topA],]
+to_core
+# Edge of the core TF activating himself
+auto_core <- GRN_TFnorm[GRN_TFnorm$tf == core_node & GRN_TFnorm$target == core_node,]
+auto_core
+# Rest of the edges connecting the all the nodes
+all_nodes <- unique(c(core_node, from_core$target, to_core$tf))
+all_nodes
+cytoGRN.X <- GRN_TFnorm[GRN_TFnorm$tf %in% all_nodes & GRN_TFnorm$target %in% all_nodes,]
+cytoGRN.X <- cytoGRN.X[order(cytoGRN.X$prob, decreasing = TRUE),]
+cytoGRN.X
+message("Total number of nodes: ",length(all_nodes))
+message("Total number of edges: ",dim(cytoGRN.X)[1])
+```
+
+```{r}
+# Write the GRN dataframe to a tsv file to represent in Cytoscape
+write.table(cytoGRN.X, paste0("../Results/Cytoscape/",cell,"/cytoGRN_X_",cell,"_",core_node,".tsv"), sep = "\t", quote = F, col.names = NA, row.names = TRUE)
+```
+
+## 2. Core-->DownGenes NETWORK
+### 2.1. Without DEGs filtering
+Second, we create the network with top 15 genes/TFs controlled by the core_node / core TF (e.g. Rbpj) and if they are genes we show the top 3 TF controlling this gene, and if it is TF we show the top 5 genes controlled by this TF.
+```{r}
+dim(GRN_TFnorm)
+topA = 10
+topB = 10
+topC = 3
+# genes whose expression is activated by the core TF
+from_core <- GRN_TFnorm[GRN_TFnorm$tf == core_node,]
+from_core <- from_core[order(from_core$prob, decreasing = TRUE)[1:topA],]
+from_core
+tfs_from_core <- GRN_TFnorm[GRN_TFnorm$tf == core_node & GRN_TFnorm$is.target.a.TF == "yes",]
+tfs_from_core <- tfs_from_core[order(tfs_from_core$prob, decreasing = TRUE)[1:topB],]
+tfs_from_core
+# TFs activating the core TF expression
+tfs_genes <- NULL
+for (TF in tfs_from_core$target){
+  TF_genes <- GRN_TFnorm[GRN_TFnorm$tf == TF,]
+  TF_genes <- TF_genes[order(TF_genes$prob, decreasing = TRUE)[1:topC],]
+  tfs_genes <- rbind(tfs_genes, TF_genes)
+}
+tfs_genes
+# Edge of the core TF activating himself
+auto_core <- GRN_TFnorm[GRN_TFnorm$tf == core_node & GRN_TFnorm$target == core_node,]
+auto_core
+# Rest of the edges connecting the all the nodes
+all_nodes <- unique(c(core_node, from_core$target, tfs_from_core$target, tfs_genes$target))
+all_nodes
+cytoGRN.D <- GRN_TFnorm[GRN_TFnorm$tf %in% all_nodes & GRN_TFnorm$target %in% all_nodes,]
+cytoGRN.D <- cytoGRN.D[order(cytoGRN.D$prob, decreasing = TRUE),]
+cytoGRN.D
+message("Total number of nodes: ",length(all_nodes))
+message("Total number of edges: ",dim(cytoGRN.D)[1])
+```
+
+```{r}
+# Write the GRN dataframe to a tsv file to represent in Cytoscape
+write.table(cytoGRN.DT, paste0("../Results/Cytoscape/",cell,"/cytoGRN_DT_",cell,"_",core_node,".tsv"), sep = "\t", quote = F, col.names = NA, row.names = TRUE)
+write.table(cytoGRN.DTjust, paste0("../Results/Cytoscape/",cell,"/cytoGRN_DTjust_",cell,"_",core_node,".tsv"), sep = "\t", quote = F, col.names = NA, row.names = TRUE)
+core_node
+```
+
+## 2.2. With DEGs filtering
+Second, we create the network with top 15 genes/TFs controlled by the core_node / core TF (e.g. Rbpj) and if they are genes we show the top 3 TF controlling this gene, and if it is TF we show the top 5 genes controlled by this TF.
+```{r}
+dim(GRN_TFnorm)
+topA = 100
+topB = 50
+topC = 60
+# genes whose expression is activated by the core TF
+#
+from_core <- GRN_TFnorm[GRN_TFnorm$tf == core_node,]
+from_core <- from_core[order(from_core$score.DEGsel, decreasing = TRUE)[1:topA],]
+from_core
+tfs_from_core <- GRN_TFnorm[GRN_TFnorm$tf == core_node & GRN_TFnorm$is.target.a.TF == "yes",]
+tfs_from_core <- tfs_from_core[order(tfs_from_core$score.DEGsel, decreasing = TRUE)[1:topB],]
+tfs_from_core
+auto_core <- GRN_TFnorm[GRN_TFnorm$tf == core_node & GRN_TFnorm$target == core_node,]
+
+# TFs activating the core TF expression
+tfs_genes <- NULL
+for (TF in c(tfs_from_core$target)){
+  TF_genes <- GRN_TFnorm[GRN_TFnorm$tf == TF,]
+  TF_genes <- TF_genes[order(TF_genes$score.DEGsel, decreasing = TRUE)[1:topC],]
+  tfs_genes <- rbind(tfs_genes, TF_genes)
+}
+tfs_genes
+
+# Rest of the edges connecting the all the nodes
+all_nodes <- unique(c(core_node, from_core$target, tfs_from_core$target, tfs_genes$target, 'Plvap'))
+all_nodes
+cytoGRN.Ddeg <- GRN_TFnorm[GRN_TFnorm$tf %in% all_nodes & GRN_TFnorm$target %in% all_nodes,]
+cytoGRN.Ddeg <- cytoGRN.Ddeg[order(cytoGRN.Ddeg$score.DEGsel, decreasing = TRUE),]
+cytoGRN.Ddeg
+message("Total number of nodes: ",length(all_nodes))
+message("Total number of edges: ",dim(cytoGRN.Ddeg)[1])
+# without upgoing edges, just downstream edges
+cytoGRN.Ddegjust <- rbind(from_core, tfs_from_core, auto_core, tfs_genes)
+cytoGRN.Ddegjust <- cytoGRN.Ddegjust[order(cytoGRN.Ddegjust$score.DEGsel, decreasing = TRUE),]
+cytoGRN.Ddegjust
+```
+
+```{r}
+# Write the GRN dataframe to a tsv file to represent in Cytoscape
+write.table(cytoGRN.Ddeg, paste0("../Results/Cytoscape/",cell,"/cytoGRN_Ddeg_",cell,"_",core_node,".tsv"), sep = "\t", quote = F, col.names = NA, row.names = TRUE)
+write.table(cytoGRN.Ddegjust, paste0("../Results/Cytoscape/",cell,"/cytoGRN_Ddegjust_",cell,"_",core_node,".tsv"), sep = "\t", quote = F, col.names = NA, row.names = TRUE)
+core_node
+```
+
+
+## 3. Downstream GRN with TFS with DEGs filtering
+```{r}
+dim(GRN_TFnorm)
+topA = 10
+topB = 15
+topC = 20
+# TF whose expression is activated by the core TF
+tfs_from_core <- GRN_TFnorm[GRN_TFnorm$tf == core_node & GRN_TFnorm$is.target.a.TF == "yes",]
+x <- tfs_from_core$score.DEGsel
+tfs_from_core$score.DEGsel <- (x - min(x))/(max(x) - min(x))
+auto_core <- tfs_from_core[tfs_from_core$tf == core_node & tfs_from_core$target == core_node,] # Edge of the core TF activating himself
+tfs_from_core <- tfs_from_core[order(tfs_from_core$score.DEGsel, decreasing = TRUE)[1:topA],]
+tfs_from_core
+
+# TFs activating the core TF expression
+tfs_genes <- NULL
+for (TF in tfs_from_core$target){
+  TF_genes <- GRN_TFnorm[GRN_TFnorm$tf == TF,]
+  TF_genes <- TF_genes[order(TF_genes$score.DEGsel, decreasing = TRUE)[1:topC],]
+  tfs_genes <- rbind(tfs_genes, TF_genes)
+}
+tfs_genes
+
+# Rest of the edges connecting the all the nodes
+all_nodes <- unique(c(core_node, tfs_from_core$target, tfs_genes$target))
+all_nodes
+cytoGRN.DTdeg <- GRN_TFnorm[GRN_TFnorm$tf %in% all_nodes & GRN_TFnorm$target %in% all_nodes,]
+cytoGRN.DTdeg <- cytoGRN.DTdeg[order(cytoGRN.DTdeg$score.DEGsel, decreasing = TRUE),]
+#cytoGRN.DTdeg <- cytoGRN.DTdeg[cytoGRN.DTdeg$score.DEGsel > 0.96,]
+cytoGRN.DTdeg
+message("Total number of nodes: ",length(all_nodes))
+message("Total number of edges: ",dim(cytoGRN.DT)[1])
+# without upgoing edges, just downstream edges
+cytoGRN.DTdegjust <- rbind(tfs_from_core,auto_core,tfs_genes)
+cytoGRN.DTdegjust <- cytoGRN.DTdegjust[order(cytoGRN.DTdegjust$score.DEGsel, decreasing = TRUE),]
+cytoGRN.DTdegjust
+# cytoGRN.DTdegjust <- cytoGRN.DTdegjust[cytoGRN.DTdegjust$score.DEGsel > 0.96,]
+```
+
+```{r}
+# Write the GRN dataframe to a tsv file to represent in Cytoscape
+write.table(cytoGRN.DTdeg, paste0("../Results/Cytoscape/",cell,"/cytoGRN_DTdeg_",cell,"_",core_node,".tsv"), sep = "\t", quote = F, col.names = NA, row.names = TRUE)
+write.table(cytoGRN.DTdegjust, paste0("../Results/Cytoscape/",cell,"/cytoGRN_DTdegjust_",cell,"_",core_node,".tsv"), sep = "\t", quote = F, col.names = NA, row.names = TRUE)
+core_node
+```
+
+# 4. GRN with 5% of edges with highest probability values
+```{r}
+round(dim(GRN)[1]*0.05)
+cytoGRN.05 <- GRN[order(-GRN$prob),][1:round(dim(GRN)[1]*0.05),]
+cytoGRN.05
+```
+
+
+```{r}
+# Write the GRN dataframe to a tsv file to represent in Cytoscape
+write.table(cytoGRN.05, paste0("../Results/Cytoscape/",cell,"/cytoGRN_05_",cell,".tsv"), sep = "\t", quote = F, col.names = NA, row.names = TRUE)
+core_node
+```
+
+
+# 5. M.Guilliams network: top 5 DEGs TFs, top 10 DEGs targets, (and top 5 DEGs controlled by the other TFs)
+```{r}
+dim(DEGs)
+DEGs
+GRN_TFnorm_core <- GRN_TFnorm[GRN_TFnorm$tf == core_node,]
+GRN_MG_core <- GRN_TFnorm_core[GRN_TFnorm_core$target %in% DEGs$gene,]
+GRN_MG_core # all the target genes in this network are in the DEGs list
+TFs_core <- GRN_MG_core[GRN_MG_core$is.target.a.TF == "yes",]
+TFs_core <- TFs_core[order(-TFs_core$score.DEGsel),]
+TFs_core
+targets_core <- GRN_MG_core[GRN_MG_core$is.target.a.TF == "no",]
+targets_core <- targets_core[order(-targets_core$score.DEGsel),]
+targets_core
+cytoGRN_MG <- rbind(TFs_core[1:7,],targets_core[1:10,])
+cytoGRN_MG <- cytoGRN_MG[order(-cytoGRN_MG$score.DEGsel),]
+cytoGRN_MG
+```
+
+
+```{r}
+# Write the GRN dataframe to a tsv file to represent in Cytoscape
+write.table(cytoGRN_MG, paste0("../Results/Cytoscape/",cell,"/cytoGRN_MG_",core_node,"_",cell,".tsv"), sep = "\t", quote = F, col.names = NA, row.names = TRUE)
+core_node
+```

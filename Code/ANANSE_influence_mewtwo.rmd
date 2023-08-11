@@ -1,0 +1,673 @@
+---
+title: "ANANSE_influence_mewtwo"
+author: "Joel Pablos Martín"
+date: "2023-06-14"
+output: html_document
+---
+
+# Setting working directory
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir ="/srv/data/joelpm/Code")
+setwd("/srv/data/joelpm/Code")
+getwd()
+```
+
+```{r, eval=FALSE}
+# To convert the .rmd to .R
+knitr::purl("/srv/data/joelpm/Code/ANANSE_influence_mewtwo.rmd", documentation=2)
+```
+
+# Load ANANSE influence output data
+```{r}
+library(ggplot2)
+library(ggrepel)
+library(extrafont)
+
+setClass("MyClass_NICHE", slots = c(KC = "list", HSC = "list", LSEC = "list", Hep = "list", Neutro = "list", KC_KG = "list", Mono_KG = "list"))
+ANANSEinf_diffNet <- new("MyClass_NICHE", KC = list(), HSC = list(), LSEC = list(), Hep = list(), Neutro = list(), KC_KG = list(), Mono_KG = list())
+ANANSEinf_scores <- new("MyClass_NICHE", KC = list(), HSC = list(), LSEC = list(), Hep = list(), Neutro = list(), KC_KG = list(), Mono_KG = list())
+ANANSEinf_DEGs <- new("MyClass_NICHE", KC = list(), HSC = list(), LSEC = list(), Hep = list(), Neutro = list(), KC_KG = list(), Mono_KG = list())
+
+cell_types <- c("KC","HSC","LSEC","Hep","Neutro","KC_KG","Mono_KG")
+cell_types <- c("KC_KG","Mono_KG")
+
+for (cell1 in cell_types){
+  otherCells <- cell_types[!cell_types %in% cell1]
+  for (cell2 in otherCells){
+    path_diffnet = paste0("../Results/ANANSE_influence/",cell2,"/",cell2,"vs",cell1,"_influence_diffnetwork.tsv")
+    path_scores = paste0("../Results/ANANSE_influence/",cell2,"/",cell2,"vs",cell1,"_influence.tsv")
+    cell1_cut <-  gsub("_KG", "", cell1)
+    cell2_cut <-  gsub("_KG", "", cell2)
+    path_DEGs = paste0("../Data/ATLAS/MouseStSt/specificScore/PRESTO/VS_DEGs/PRESTO_DEGs_",cell2_cut,"vs",cell1_cut,".tsv")
+    if (file.exists(path_diffnet)) {
+      slot(ANANSEinf_diffNet, cell1)[[paste0(cell2,"2",cell1)]] <-  read.table(path_diffnet, sep = "\t", header = TRUE)
+    }
+    if (file.exists(path_scores)) {
+      scores_table <- read.table(path_scores, sep = "\t", header = TRUE)
+      DEGs <- read.table(path_DEGs, sep = "\t", header = TRUE, row.names = 1) # this two lines are not needed since log2FC is already included in ananse influence
+      DEGs$PerCellDiff <- (DEGs$pct_in - DEGs$pct_out)/100
+      slot(ANANSEinf_DEGs, cell1)[[paste0(cell2,"2",cell1,"_DEGs")]] <-  DEGs
+      scores_table_merged <- merge(scores_table, DEGs, by.x = "factor", by.y = "row.names", all.x = TRUE)
+      slot(ANANSEinf_scores, cell1)[[paste0(cell2,"2",cell1)]] <-  scores_table_merged
+
+      # Create the scatter plot with modified aesthetics and non-overlapping labels
+      plot <- ggplot(data = scores_table, aes(x = factor_fc, y = influence_score)) +
+        geom_point(aes(size = direct_targets) , shape = 21, fill = "deepskyblue3", color = "deepskyblue4", alpha = 0.4) +
+        geom_text_repel(data = subset(scores_table, influence_score > 0.75),
+                        aes(label = factor), box.padding = 0.5, max.overlaps = 25) +
+        labs(x = "Log2 fold change of TF",
+             y = "Influence Score",
+             title = paste0(cell2, " to ", cell1," - ANANSE influence")) +
+        theme_classic() +
+        theme(plot.title = element_text(hjust = 0.5)) + # face = "bold",family = "Times New Roman"
+        scale_size_continuous(name = "Outdegree")
+      
+      # Save the plot as a high-resolution JPEG
+      pathjpg = paste0("../Results/ANANSE_plot/",cell1,"/influence_",cell2,"2",cell1,".jpg")
+      ggsave(pathjpg, plot, dpi = 300, width = 8, height = 6, units = "in")
+      
+      # Display the plot
+      print(plot)
+    }
+  }
+}
+rm(cell1, cell2, cell1_cut, cell2_cut, otherCells, path_DEGs, path_diffnet, path_scores, plot, pathjpg, DEGs, cell_types, scores_table, scores_table_merged)
+``` 
+
+We calculate the specificity of each TF for each cell type when comparing it with different combinations of other cell types
+```{r}
+CELLS1 <- c("KC","HSC","LSEC","Hep","Neutro","Mono_KG")
+CELLS2 <- c("KC","HSC","LSEC","Hep","Neutro")
+CELLS3 <- c("KC","HSC","LSEC","Hep")
+CELLS4 <- c("KC_KG","Mono_KG")
+CELLS_LIST <- list(CELLS1, CELLS2, CELLS3, CELLS4)
+CELLS_LIST <- list(CELLS4)
+
+m = 0
+for (CELLS in CELLS_LIST){
+  m = m + 1
+  message(m)
+  message(CELLS)
+  colCRM <- CELLS
+  cx = 0
+  for (cell in CELLS){
+    cell = "KC_KG"
+    cx = cx + 1
+    slts <- slot(ANANSEinf_scores, cell)
+    snam <- names(slts)
+    take <- match(CELLS, gsub(paste0("2",cell), "", snam))
+    take <- take[!is.na(take)]
+    slts <- slts[take]
+    snam <- names(slts)
+    
+    colCRM <- snam
+    zerorw <- rep(c(0), each = length(colCRM))
+    CRM <- data.frame(matrix(ncol = length(colCRM), nrow = 0))
+    colnames(CRM) <- colCRM
+    
+    for (x in seq(1,length(slts))){
+      vsCell = snam[x]
+      slts_filt <- slts[[x]]
+      slts_filt <- slts_filt[slts_filt$influence_score > 0.70,]
+      for (r in slts_filt$factor){
+        if (r %in% rownames(CRM)){
+          CRM[r,vsCell] <- 1
+        }else{
+          CRM[r,] <- zerorw
+          CRM[r,vsCell] <- 1
+        }
+      }
+    }
+    # Now we calculate in how many cell types does each TF is present
+    CRM$TotalSpec <- rowSums(CRM)
+    CRM <- CRM[order(rownames(CRM)),]
+    CRM <- CRM[order(-CRM$TotalSpec),]
+    slot(ANANSEinf_scores, cell)[[paste0("COMMON",m,"_",cell)]] <- CRM
+    # CRM <- ANANSEinf_scores@KC[["COMMON3_KC"]]
+    
+    # We merge the comparisons by doing the mean
+    otherCells <- CELLS[!CELLS %in% cell]
+    
+    slts <- slot(ANANSEinf_scores, cell)
+    snam <- names(slts)
+    take <- match(otherCells, gsub(paste0("2",cell), "", snam))
+    take <- take[!is.na(take)]
+    slts <- slts[take]
+    snam <- names(slts)
+    
+    comp_list <- list()
+    for (other in seq(1,length(snam))){
+      XYZ <- subset(slts[[other]], select = c("factor","influence_score","target_score","G_score","direct_targets","factor_fc","padj"))
+      colOrignal <- colnames(XYZ)
+      colnames(XYZ) <- paste0(other,".", colnames(XYZ))
+      colnames(XYZ)[1] <- "factor"
+      comp_list[[snam[[other]]]] <- XYZ
+      
+      if (other == 1){First <- XYZ}
+      else{
+        XYZ_merge <- merge(First, XYZ, by = "factor", all = TRUE)
+        XYZ_merge[is.na(XYZ_merge)] <- 0
+        First <- XYZ_merge}
+      if (length(snam) == 1){
+        XYZ_merge <- First
+        XYZ_merge[is.na(XYZ_merge)] <- 0      }
+    }
+    head(XYZ_merge)
+    XYZ_final <- data.frame(factor = XYZ_merge$factor, row.names = seq(1,nrow(XYZ_merge)))
+    
+    # Now we do the mean of each value in the dataframe
+    if (length(snam) != 1){
+      for (i in seq(2,length(XYZ))){
+        s <- seq(0,length(otherCells)-1)
+        r <- rep(i,length(otherCells))
+        r <- r+s*(length(XYZ)-1)
+        XYZ_final[[i]] <- rowMeans(XYZ_merge[,r])
+      }}
+    else{
+        XYZ_final <- XYZ_merge
+    }
+    colnames(XYZ_final) <- colOrignal
+    XYZ_final_merge <- merge(XYZ_final, CRM, by.x = "factor", by.y = "row.names", all = TRUE)
+    XYZ_final <- XYZ_final[!(XYZ_final$factor == "Alb"),] # its not a TF
+    XYZ_final_merge <- XYZ_final_merge[!(XYZ_final_merge$factor == "Alb"),] # its not a TF
+    XYZ_final_merge$TotalSpec[is.na(XYZ_final_merge$TotalSpec)] <- 0
+    XYZ_final_merge$Newinfluence <- (XYZ_final_merge$influence_score * (XYZ_final_merge$TotalSpec + 1))/length(CELLS)
+    XYZ_final_merge <- XYZ_final_merge[order(-XYZ_final_merge$Newinfluence),]
+    rownames(XYZ_final_merge) <- seq(1:nrow(XYZ_final_merge))
+
+    write.table(XYZ_final_merge,
+                paste0("../Results/ANANSE_influence/",cell,"/ANANSE_influence_",cell,"_",m,"_SelScoreFINAL.tsv"),
+                sep="\t", row.names=TRUE, col.names = NA, quote=FALSE, fileEncoding = "UTF-8") 
+    
+    # Create the scatter plot with modified aesthetics and non-overlapping labels
+    thresh = 25
+    # top_labels1 <- XYZ_final[order(XYZ_final$influence_score, decreasing = TRUE), ][1:thresh, ]
+    #top_labels1 <- XYZ_final_merge[order(XYZ_final_merge$influence_score, decreasing = TRUE), ]
+    # top_labels1 <- top_labels1[top_labels1$influence_score > 0.7,]
+    top_labels2 <- XYZ_final_merge[order(XYZ_final_merge$Newinfluence, decreasing = TRUE), ]
+    top_labels2_A <- top_labels2[top_labels2$Newinfluence >= 0.8,]
+    top_labels2_B <- top_labels2[0.8 > top_labels2$Newinfluence & top_labels2$Newinfluence > 0.25,]
+    top_labels2_B <- top_labels2_B[top_labels2_B$factor_fc > 0.5 | top_labels2_B$direct_targets > 7500,]
+    top_labels1 <- rbind(top_labels2_A, top_labels2_B)
+    
+    library(ggplot2)
+    library(ggforce)
+    plot1 <- ggplot(data = XYZ_final, aes(x = factor_fc, y = influence_score)) +
+            geom_point(aes(size = direct_targets) , shape = 21, fill = "deepskyblue3", color = "deepskyblue4", alpha = 0.4) +
+            geom_text_repel(data = subset(top_labels1),
+                            aes(label = factor), box.padding = 0.5,  max.overlaps = Inf,  force = 0.5) +
+            labs(x = "Log2 fold change of TF",
+                 y = "Influence Score",
+                 title = paste0(cell," - ANANSE influence (COMMON ",m,")")) +
+            theme_classic() +
+            theme(plot.title = element_text(hjust = 0.5)) + # face = "bold",family = "Times New Roman"
+            scale_size_continuous(name = "Outdegree") +
+            coord_cartesian(ylim = c(min(XYZ_final$influence_score), 1.25))
+    
+    # top_labels2 <- XYZ_final_merge[order(XYZ_final_merge$Newinfluence, decreasing = TRUE), ][1:thresh, ]
+    top_labels2 <- XYZ_final_merge[order(XYZ_final_merge$Newinfluence, decreasing = TRUE), ]
+    top_labels2_A <- top_labels2[top_labels2$Newinfluence >= 0.75,]
+    top_labels2_B <- top_labels2[0.75 > top_labels2$Newinfluence & top_labels2$Newinfluence > 0.25,]
+    top_labels2_B <- top_labels2_B[top_labels2_B$factor_fc > 0.5 | top_labels2_B$direct_targets > 7500,]
+    top_labels2 <- rbind(top_labels2_A, top_labels2_B)
+
+    plot2 <- ggplot(data = XYZ_final_merge, aes(x = factor_fc, y = Newinfluence)) +
+        geom_point(aes(size = direct_targets) , shape = 21, fill = "deepskyblue3", color = "deepskyblue4", alpha = 0.4) +
+        geom_text_repel(data = subset(top_labels2, Newinfluence > 0.25),
+                        aes(label = factor), box.padding = 0.5, max.overlaps = Inf,  force = 0.5) +
+        labs(x = "Log2 fold change of TF",
+             y = "Influence Score",
+             title = paste0(cell," - ANANSE influence (COMMON ",m,")")) +
+        theme_classic() +
+        theme(plot.title = element_text(hjust = 0.5)) + # face = "bold",family = "Times New Roman"
+        scale_size_continuous(name = "Outdegree") +
+        coord_cartesian(ylim = c(min(XYZ_final_merge$Newinfluence), 1.25))
+    
+    # Save the plot as a high-resolution JPEG
+    pathjpg1 = paste0("../Results/ANANSE_plot/",cell,"/influence_",cell,"_",m,"_inflMeans.jpg")
+    ggsave(pathjpg1, plot1, dpi = 300, width = 8, height = 6, units = "in")
+    pathjpg2 = paste0("../Results/ANANSE_plot/",cell,"/influence_",cell,"_",m,"_inflMeansANDspec.jpg")
+    ggsave(pathjpg2, plot2, dpi = 300, width = 8, height = 6, units = "in")
+    
+    # Display the plot
+    message(paste0(cell," - ANANSE influence (COMMON ",m,")"))
+    print(plot1)
+    print(plot2)
+  }
+}
+# save(NICHE_DiffBind_expr, ascii=FALSE, file="../Results/DiffBind_Lasso/xxx.bin")
+# load("../Results/DiffBind_Lasso/xxx.bin")
+
+rm(CELLS1, CELLS2, CELLS3, CELLS4, CELLS_LIST, m, colCRM, cx, slts, snam, take, CRM, vsCell, XYZ, colOrignal, XYZ_merge, XYZ_final, otherCells, comp_list, top_labels1, top_labels2, pathjpg1, pathjpg2, cell, cell_types, CELLS, other, r, thresh, x, zerorw, slts_filt, First, scores_table, scores_table_merged, top_labels2_A, top_labels2_B,XYZ_final_merge)
+```
+
+
+```{r, eval = FALSE}
+top_labels2 <- XYZ_final_merge[order(XYZ_final_merge$Newinfluence, decreasing = TRUE), ]
+    top_labels2_A <- top_labels2[top_labels2$Newinfluence >= 0.8,]
+    top_labels2_B <- top_labels2[0.8 > top_labels2$Newinfluence & top_labels2$Newinfluence > 0.25,]
+    top_labels2_B <- top_labels2_B[top_labels2_B$factor_fc > 0.5 | top_labels2_B$direct_targets > 7500,]
+    top_labels1 <- rbind(top_labels2_A, top_labels2_B)
+
+plot1 <- ggplot(data = XYZ_final, aes(x = factor_fc, y = influence_score)) +
+  geom_point(aes(size = direct_targets), shape = 21, fill = "deepskyblue3", color = "deepskyblue4", alpha = 0.4) +
+  geom_text_repel(data = subset(top_labels1),
+                  aes(label = factor), box.padding = 0.5,  max.overlaps = Inf,  force = 0.5) +
+  labs(x = "Log2 fold change of TF",
+       y = "Influence Score",
+       title = paste0(cell, " - ANANSE influence (COMMON ", m, ")")) +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_size_continuous(name = "Outdegree") +
+  coord_cartesian(ylim = c(min(XYZ_final$influence_score), 1.25)) 
+  
+plot1A <- plot1 + scale_x_continuous(limits = c(0, 0.8))
+plot1B <- plot1 + scale_x_continuous(limits = c(1.2, 1.7))
+
+
+print(plot1A)
+print(plot1B)
+
+ggsave(filename = "plot1A.jpeg", plot = plot1A, width = 800, height = 500)
+ggsave(filename = "plot1A.jpeg", plot = plot1A, width = 800, height = 500)
+
+```
+
+
+
+## Indegree of diffNetwork (Data Mining course project 2023 JPM)
+```{r}
+library(progress)
+
+# Load diffNetwork
+diffNet <- ANANSEinf_diffNet@KC_KG[["Mono_KG2KC_KG"]]
+diffNet <- diffNet[order(-diffNet$weight),]
+diffNet <- diffNet[diffNet$source != "Alb",]  # The motif database has an error because it has Alb as a TF while is known in literature that albumin is not a TF, for this reason we remove it from the differential network before performing the downstream analysis
+
+# Load differential expression data
+DEGs <- ANANSEinf_DEGs@KC_KG[["Mono_KG2KC_KG_DEGs"]]
+diffNet <- merge(diffNet, DEGs[,c("log2FoldChange", "PerCellDiff")], by.x = "source", by.y = "row.names", all.x = FALSE)
+colnames(diffNet)[(ncol(diffNet) - 1):ncol(diffNet)] <- c("tf_log2FC", "tf_pcd")
+diffNet <- merge(diffNet, DEGs[,c("log2FoldChange", "PerCellDiff")], by.x = "target", by.y = "row.names", all.x = FALSE)
+colnames(diffNet)[(ncol(diffNet) - 1):ncol(diffNet)] <- c("target_log2FC", "target_pcd")
+diffNet <- diffNet[, c(2, 1, 3:ncol(diffNet))]
+
+# Create the sub-networks matrix with the links (empty one)
+diffMatrix.weight <- reshape(diffNet[,c("source","target","weight")], idvar = "source", timevar = "target", direction = "wide")
+rownames(diffMatrix.weight) <- diffMatrix.weight$source
+diffMatrix.weight <- diffMatrix.weight[,-1]
+colnames(diffMatrix.weight) <- sub("^weight\\.", "", colnames(diffMatrix.weight))
+diffMatrix.weight <- replace(diffMatrix.weight, is.na(diffMatrix.weight), 0)
+diffMatrix.weight <- diffMatrix.weight[order(rownames(diffMatrix.weight)),]
+diffMatrix.weight <- diffMatrix.weight[,order(colnames(diffMatrix.weight))]
+
+library(Matrix)
+diffMatrix.weight <- Matrix(as.matrix(diffMatrix.weight), sparse = TRUE)
+if (FALSE){ # sorting by indegree and outdegree
+  # We calculate the indegree
+  diffMatrix.weight <- rbind(as.integer(colSums(diffMatrix.weight != 0)), diffMatrix.weight)
+  rownames(diffMatrix.weight) <- c("indegree", rownames(diffMatrix.weight)[-1])
+  diffMatrix.weight <- diffMatrix.weight[,order(-diffMatrix.weight["indegree",])]
+  # Calculate the outdegree
+  diffMatrix.weight <- cbind(as.integer(rowSums(diffMatrix.weight != 0)), diffMatrix.weight)
+  colnames(diffMatrix.weight) <- c("outdegree", colnames(diffMatrix.weight)[-1])
+  diffMatrix.weight <- diffMatrix.weight[order(-diffMatrix.weight[,"outdegree"]),]
+  diffMatrix.weight[1,1] <- NA
+
+  # Create a matrix with the walk steps
+  diffMatrix.weight <- diffMatrix.weight[-1,-1]
+}
+diffMatrix.walk <- diffMatrix.weight 
+diffMatrix.walk[diffMatrix.walk != 0] <- 1
+diffMatrix.walk
+
+uncontrolled <- sort(rownames(diffMatrix.walk)[!rownames(diffMatrix.walk) %in% colnames(diffMatrix.walk)]) # list of TF that are not controlled by any TF in the diffNetwork
+controlled <- sort(rownames(diffMatrix.walk)[rownames(diffMatrix.walk) %in% colnames(diffMatrix.walk)]) # list of TF that are  controlled by any TF in the diffNetwork
+r = 0
+twocount = 0
+threecount = 0
+while (TRUE){
+  if (r != 0){if (identical(RAW_diffMatrix.walk, table(diffMatrix.walk@x))){break}}
+  RAW_diffMatrix.walk <- table(diffMatrix.walk@x)
+  r = r + 1
+  pb <- progress_bar$new(total = nrow(diffMatrix.walk)) # progress bar
+  selfTF <- c()
+  for (s in rownames(diffMatrix.walk)){
+    pb$tick()
+    targetSet <- colnames(diffMatrix.walk)[diffMatrix.walk[s,] >= 1] # this includes NA values
+    targetTFSet <- targetSet[targetSet %in% rownames(diffMatrix.walk)]
+    if (length(targetTFSet) == 0){next} # if TF1  (s) does not control any TF, then we skip to the next TF
+    for (t in colnames(diffMatrix.walk)[diffMatrix.walk[s,] == 0]){
+      TFsoftB <- rownames(diffMatrix.walk)[diffMatrix.walk[,t] >= 1]
+      TFsoftB <- TFsoftB[TFsoftB %in% colnames(diffMatrix.walk)] # TFs that can be controlled by s
+      TFsoftAB <- TFsoftB[TFsoftB %in% targetTFSet] #
+      if (length(TFsoftAB) != 0){
+      # if (length(TFsoftAB) == 0){
+        twocount = twocount + 1
+        newIS <- sort(diffMatrix.weight[s,TFsoftAB] + diffMatrix.weight[TFsoftAB, t], decreasing=TRUE)
+        i = 2
+        diffMatrix.weight[s,t] <- newIS[1]/i
+        diffMatrix.walk[s,t] <- i
+      }else{
+        suppressWarnings({
+        threecount = threecount + 1
+        i = 3
+        mx2TF3 <- diffMatrix.weight[targetTFSet, TFsoftB]
+        boolean_mx2TF3 <- mx2TF3 > 0
+        vecS1 <- diffMatrix.weight[s,targetTFSet]
+        vecT <- diffMatrix.weight[TFsoftB,t]
+        
+        if (length(vecS1) != 1){ mx2TF3 <- sweep(mx2TF3, 1, vecS1, "+") }else{ mx2TF3 <- vecS1 + mx2TF3 }
+        mx2TF3 <- Matrix(as.matrix(mx2TF3), sparse = TRUE)
+        if (length(vecT)  != 1){ mx2TF3 <- sweep(mx2TF3, 2, vecT , "+") }else{ mx2TF3 <- mx2TF3 + vecT }
+        mx2TF3[!boolean_mx2TF3] <- 0
+        mx2TF3 <- Matrix(as.matrix(mx2TF3), sparse = TRUE)
+
+        if (type(mx2TF3) != "double"){
+          for (n in rownames(mx2TF3)) {if (n %in% colnames(mx2TF3)){mx2TF3[n, n] <- 0}} # remove self regulating TFs in the TF2 to TF3 step
+        }else{
+          if (length(mx2TF3) > 1){          for (n in rownames(mx2TF3)) {if (n %in% colnames(mx2TF3)){mx2TF3[n, n] <- 0}} # remove self regulating TFs in the TF2 to TF3 step
+          }else{
+          rownames(mx2TF3) <- targetTFSet
+          colnames(mx2TF3) <- TFsoftB
+          if (targetTFSet == TFsoftB){mx2TF3 <- 0}
+          }
+        }
+        
+        coor <- which(mx2TF3 == max(mx2TF3), arr.ind = TRUE)
+        IS23 <- mx2TF3[coor[1],coor[2]]
+        diffMatrix.weight[s,t] <- IS23/i
+        diffMatrix.walk[s,t] <- i
+        # TF1 <- s
+        # TF2 <- rownames(mx2TF3)[coor[1]]
+        # TF3 <- colnames(mx2TF3)[coor[2]]
+        # target <- t
+        })
+      }
+    }
+    
+    if (FALSE){
+      if (t %in% rownames(diffMatrix.walk)){ # if t (target B) gene of s (tf A) is also a tf (tf B)then lets see which are the target genes of tf B and add them ass step 2 to tf A
+        targetSetTFB <- colnames(diffMatrix.walk)[diffMatrix.walk[t,] >= 1] # this includes NA values
+        diffSet2 <- targetSetTFB[!(targetSetTFB %in% targetSet)] # target genes activated by TF B that are regulated indirectly also by TF A in two steps
+        if (length(diffSet2) != 0){
+          diffMatrix.walk[s, diffSet2] <- diffMatrix.walk[t,diffSet2] + 1 # we add an extra step
+          diffMatrix.weight[s, diffSet2] <- diffMatrix.weight[s, t] + diffMatrix.weight[t, diffSet2]
+        }
+      }
+    }
+    if (s %in% colnames(diffMatrix.walk)){selfTF <- c(selfTF, diffMatrix.walk[s,s])}
+  }
+  print(table(diffMatrix.walk@x))
+}
+```
+
+```{r}
+DEGs <- ANANSEinf_DEGs@KC_KG[["Mono_KG2KC_KG_DEGs"]]
+target_score_final <- c()
+for (t in colnames(diffMatrix.walk)){
+  # Select the subnetwork to a maximum further distance of 3 steps/edges from the target node
+  ## 1. Steps (L):
+  subNet.walk <- diffMatrix.walk[,t]
+  subNet.walk <- subNet.walk[subNet.walk >= 1 & subNet.walk <= 3]
+  subNet.walk <- subNet.walk[order(names(subNet.walk))]
+  ## 2. Interaction score (P):
+  subNet.weight <- diffMatrix.weight[,t]
+  subNet.weight <- sort(subNet.weight[subNet.weight > 0 & !is.na(subNet.weight)])
+  subNet.weight <- subNet.weight[order(names(subNet.weight))]
+  ## 3. Differential expression (G):
+  subNet.DEGs <- DEGs[rownames(DEGs) %in% names(subNet.walk),]
+  subNet.DEGs <- subNet.DEGs[order(rownames(subNet.DEGs)),]
+  
+  # We now create the subnetwork dataframe and calculate the target score.
+  subNet.target <- data.frame(tf = names(subNet.walk),
+                              target = t,
+                              weight = subNet.weight,
+                              distance_edges = subNet.walk,
+                              log2FC = subNet.DEGs$log2FoldChange,
+                              avgExpr = subNet.DEGs$avgExpr,
+                              PerCellDiff = subNet.DEGs$PerCellDiff)
+  subNet.target$target_score <- (abs(subNet.target$log2FC) * subNet.target$weight)/subNet.target$distance_edges
+  subNet.target$target_score <- scales::rescale(subNet.target$target_score, to = c(0, 1))
+  subNet.target <- cbind(subNet.target[, c("tf", "target", "target_score", "weight", "distance_edges", "log2FC", "avgExpr", "PerCellDiff")])
+  subNet.target <- subNet.target[order(-subNet.target$target_score),]
+  rownames(subNet.target) <- seq(1,nrow(subNet.target))
+  
+  # target_score_final <- c(target_score_final, setNames(sum(subNet.target$target_score), t))
+  target_score_final <- c(target_score_final, setNames(sum(subNet.target$target_score)/nrow(subNet.target), t))
+}
+target_score_final <- sort(target_score_final, decreasing = TRUE)
+target_score_final <- scales::rescale(target_score_final, to = c(0, 1))
+# We do the mean of the target score and the expression score (log2FC), both scaled from 0 to 1, an the result is the influenced_score of the target gene
+target.DEGs <- DEGs[rownames(DEGs) %in% names(target_score_final),]
+target.DEGs <- target.DEGs[names(target_score_final),]
+
+## Indegree (of direct TF)
+indegree <- sort(colSums(diffMatrix.walk == 1, na.rm = TRUE), decreasing = TRUE)
+indegree <- indegree[names(target_score_final)]
+
+ANANSEinf_targets <- data.frame(target = names(target_score_final),
+                            target_score = scales::rescale(target_score_final, to = c(0, 1)),
+                            scale_log2FC = scales::rescale(target.DEGs$log2FoldChange, to = c(0, 1)),
+                            log2FC = target.DEGs$log2FoldChange,
+                            PerCellDiff = target.DEGs$PerCellDiff,
+                            indegree = indegree)
+
+ ANANSEinf_targets$influenced_score <- rowMeans(ANANSEinf_targets[, c("target_score", "scale_log2FC")])
+#ANANSEinf_targets$influenced_score <- ANANSEinf_targets$target_score * ANANSEinf_targets$scale_log2FC * ANANSEinf_targets$PerCellDiff
+# ANANSEinf_targets$influenced_score <- ANANSEinf_targets$target_score * ANANSEinf_targets$scale_log2FC
+
+ANANSEinf_targets$influenced_score <- scales::rescale(ANANSEinf_targets$influenced_score, to = c(0, 1))
+ANANSEinf_targets <- ANANSEinf_targets[order(-ANANSEinf_targets$influenced_score),]
+rownames(ANANSEinf_targets) <- seq(1,nrow(ANANSEinf_targets))
+ANANSEinf_targets <- cbind(ANANSEinf_targets[, c("target", "influenced_score", "target_score", "scale_log2FC", "log2FC", "PerCellDiff", "indegree")])
+ANANSEinf_targets
+# ANANSEinf_targets[order(-ANANSEinf_targets$PerCellDiff),]
+
+write.table(ANANSEinf_targets, paste0("../Results/DataMining_YSaeys/ANANSEinfluenced_Mono_KGtoKC_KG.tsv"), sep="\t", row.names=TRUE, col.names = NA, quote=FALSE, fileEncoding = "UTF-8")
+```
+
+```{r}
+library(ggplot2)
+library(ggrepel)
+ANANSEinf_targets_save <- ANANSEinf_targets
+ANANSEinf_targets <- ANANSEinf_targets[ANANSEinf_targets$log2FC > 0,]
+
+top_labels <- ANANSEinf_targets[ANANSEinf_targets$influenced_score > 0.75 | ANANSEinf_targets$log2FC > 1 | ANANSEinf_targets$indegree > 150,]
+
+plot_targets <- ggplot(data = ANANSEinf_targets, aes(x = log2FC, y = influenced_score)) +
+  geom_point(aes(size = PerCellDiff, fill = ifelse(log2FC <= 1 & influenced_score <= 0.75, "deepskyblue3",
+                                                    ifelse(log2FC > 1 & influenced_score <= 0.75, "green", "red"))),
+             shape = 21, color = "black" , alpha = 0.7, stroke = 0.2) +
+  geom_text_repel(data = subset(top_labels), aes(label = target), color = "black",
+                  box.padding = 0.5, max.overlaps = Inf, force = 0.5,
+                  segment.linetype = 1, segment.size = 0.2) +
+  labs(x = "Log2 fold change of target genes",
+       y = "Influenced Score",
+       title = paste0("Monocyte to Kupffer cell: ANANSE influenced target genes")) +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_size_continuous(name = "Percentage expressed cells (%)", range = c(0, 4)) +
+  scale_fill_manual(values = c("deepskyblue3" = "deepskyblue3", "green" = "green", "red" = "red")) +
+  coord_cartesian(ylim = c(min(ANANSEinf_targets$influenced_score), 1))
+
+plot_targets
+
+ANANSEinf_targets <- ANANSEinf_targets_save
+```
+
+
+
+
+```{r}
+library(ggplot2)
+
+# saveselfTF <- selfTF
+# selfTF <- saveselfTF
+
+hist_abs <- ggplot(data = data.frame(Value = selfTF)) +
+     geom_bar(aes(x = Value), fill = "#8E2043", color = "#8E2043", alpha = 1) +
+     labs(title = "Shortest network walk for self-regulating TFs from monocyte to KC", x = "Shorter network walk (number of steps)", y = "Frequency") +
+     theme_minimal() +
+     scale_x_continuous(breaks = seq(1, max(selfTF)), labels = seq(1, max(selfTF)))
+
+print(hist_abs)
+
+# -------------------------------------------------------------------------------
+# Calculate the percentage for each value
+percentage_data <- 100* table(selfTF) / length(selfTF) 
+
+# Create a histogram plot with percentages
+hist_plot <- ggplot(data = data.frame(Value = selfTF)) +
+  geom_bar(aes(x = Value), fill = "#8E2043", color = "#8E2043", alpha = 1) +
+  labs(title = "Shortest network walk for self-regulating TFs from monocyte to KC",
+       x = "Shorter network walk (number of steps)", y = "Percentage") +
+  theme_minimal() +
+  scale_x_continuous(breaks = seq(1, max(selfTF)), labels = seq(1, max(selfTF))) +
+  scale_y_continuous(labels = scales::percent_format(scale = 1), limits = c(0, 100))
+
+# Display the histogram plot
+print(hist_plot)
+```
+
+```{r}
+library(ggplot2)
+
+# Calculate the percentage for each value
+percentage_data <- table(selfTF) / length(selfTF) * 100
+
+# Create a histogram plot with percentages
+hist_plot <- ggplot(data = data.frame(Value = selfTF)) +
+  geom_bar(aes(x = Value), fill = "black", color = "black", alpha = 1) +
+  labs(title = "Shortest network walk for self-regulating TFs from monocyte to KC",
+       x = "Shorter network walk (number of steps)", y = "Percentage") +
+  theme_minimal() +
+  scale_x_continuous(breaks = seq(1, max(selfTF)), labels = seq(1, max(selfTF))) +
+  scale_y_continuous(labels = scales::percent_format(scale = 1))
+
+# Display the histogram plot
+print(hist_plot)
+
+```
+
+
+
+```{r}
+# Load the progress package
+library(progress)
+
+# Define the total number of iterations
+total_iterations <- 50
+
+# Create a progress bar
+pb <- progress_bar$new(total = total_iterations)
+
+# Loop or process
+for (i in 1:total_iterations) {
+  # Do something here
+  
+  # Update the progress bar
+  pb$tick()
+  Sys.sleep(0.5)
+}
+
+```
+
+
+
+
+
+```{r, eval = FALSE}
+uncontrolled <- sort(rownames(diffMatrix.walk)[!rownames(diffMatrix.walk) %in% colnames(diffMatrix.walk)]) # list of TF that are not controlled by any TF in the diffNetwork
+for (t in colnames(diffMatrix.walk)){
+  directSet <- rownames(diffMatrix.walk)[diffMatrix.walk[,t] == 1]
+  for (s in rownames(diffMatrix.walk)){
+    if (diffMatrix.walk[s,t] == 0){
+      if ()
+      # Check if walk to TF has 2 steps:
+      tf1Set <- rownames(diffMatrix.walk)[diffMatrix.walk[,s] == 1]
+      
+      break
+    }
+  }
+  break
+}
+
+```
+
+
+
+We plot the ANANSE influence plot for each cell type taking into account the specificity of each
+```{r}
+library(ggplot2)
+library(ggrepel)
+library(extrafont)
+
+cell_types <- c("KC","HSC","LSEC","Hep","Neutro","KC_KG","Mono_KG")
+CELLS1 <- c("KC","HSC","LSEC","Hep","Neutro","Mono_KG")
+CELLS2 <- c("KC","HSC","LSEC","Hep","Neutro")
+CELLS3 <- c("KC","HSC","LSEC","Hep")
+CELLS4 <- c("KC_KG","Mono_KG")
+CELLS_LIST <- list(CELLS1, CELLS2, CELLS3, CELLS4)
+
+m = 0
+for (CELLS in CELLS_LIST){
+  m = m + 1
+  colCRM <- CELLS
+
+  for (cell in CELLS){
+    otherCells <- CELLS[!CELLS %in% cell]
+    
+    slts <- slot(ANANSEinf_scores, cell)
+    snam <- names(slts)
+    take <- match(otherCells, gsub(paste0("2",cell), "", snam))
+    take <- take[!is.na(take)]
+    slts <- slts[take]
+    snam <- names(slts)
+  }
+}
+```
+
+
+
+```{r}
+# Fom Mono_KG to KC_KG
+Mono_KG2KC_KG <- ANANSEinf_scores@KC_KG[["Mono_KG2KC_KG"]]
+head(Mono_KG2KC_KG)
+```
+
+```{r}
+# Install and load the necessary packages
+# install.packages("ggplot2")  # Run this line if you haven't installed ggplot2
+# install.packages("ggrepel")  # Run this line if you haven't installed ggrepel
+# install.packages("extrafont") 
+library(ggplot2)
+library(ggrepel)
+library(extrafont)
+
+# Create the scatter plot with modified aesthetics and non-overlapping labels
+plot <- ggplot(data = Mono_KG2KC_KG, aes(x = factor_fc, y = influence_score)) +
+  geom_point(aes(size = direct_targets) , shape = 21, fill = "deepskyblue3", color = "deepskyblue4", alpha = 0.4) +
+  geom_text_repel(data = subset(Mono_KG2KC_KG, influence_score > 0.8),
+                  aes(label = factor), box.padding = 0.5, max.overlaps = 25) +
+  labs(x = "Log2 fold change of TF",
+       y = "Influence Score",
+       title = "Monocytes to Kupffer Cells - ANANSE influence") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) + # face = "bold",family = "Times New Roman"
+  scale_size_continuous(name = "Outdegree")
+
+# Save the plot as a high-resolution JPEG
+ggsave("../Results/ANANSE_plot/KC_KG/influence_Mono_KG2KC_KG.jpg", plot, dpi = 300, width = 8, height = 6, units = "in")
+
+# Display the plot
+print(plot)
+```
+
+
+
+
+
+
+
+

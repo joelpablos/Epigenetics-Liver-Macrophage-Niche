@@ -1,0 +1,442 @@
+---
+title: "cell_specific_DEgenes_scRNAseq"
+author: "Joel Pablos Martin"
+date: "2023-04-28"
+output: html_document
+---
+
+
+# Expression Data: scRNA-seq Liver Cell Atlas
+(https://www.livercellatlas.org/)
+
+```{r}
+knitr::opts_knit$set(root.dir ="/srv/data/joelpm/Code")
+# https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE192740
+```
+
+```{r}
+# To convert the .rmd to .R
+knitr::purl("/srv/data/joelpm/Code/cell_specific_DEgenes_scRNAseq.rmd", documentation=2)
+```
+
+
+```{r, echo=FALSE}
+# install.packages("vctrs")
+# install.packages('Seurat')
+# BiocManager::install("DESeq2")
+# BiocManager::install("muscat")
+# install.packages('Matrix')
+# BiocManager::install("GenomicFeatures")
+# BiocManager::install("tximeta")
+# install.packages("na.tools")
+# BiocManager::install("biomaRt")
+# remotes::install_github("immunogenomics/presto")
+library(vctrs)
+library(Seurat)
+library(DESeq2)
+library(Matrix)
+library(GenomicFeatures)
+library(tximeta)
+library(muscat)
+library(na.tools)
+library(biomaRt)
+library(presto)
+```
+
+# 1. Preprocessing and loading the data
+## 1.1. Loading expression raw data
+Loading the 10X expression data of the Liver Cell Atlas for all cells and annotated to show specific cell types as stellate cells, LSECs, and monocytes (https://www.livercellatlas.org/download.php)
+```{r}
+#/home/joelpm/Projects/Data/ATLAS/MouseStSt/All_cells/rawData_mouseStSt/countTable_mouseStSt
+All_expression_10X <- Read10X("/srv/data/joelpm/Data/ATLAS/MouseStSt/All_cells/countTable_mouseStSt",
+                              gene.column = 1,
+                              cell.column = 1,
+                              unique.features = TRUE,
+                              strip.suffix = TRUE)
+
+All_expression_10X[1:10,1:10]
+dim(All_expression_10X)
+```
+
+## 1.2. Filter cells
+```{r}
+# Load your annotations CSV file (previously adapted in scanpy)
+annot_all <- read.csv("/srv/data/joelpm/Data/ATLAS/MouseStSt/All_cells/annot_mouseStStAll_withStellateandLSECsandMono.csv", header = TRUE, stringsAsFactors = FALSE)
+annot_all <- annot_all[order(annot_all$annot),]
+annot_all
+
+# Remove cells that did not pass the filtering from the Liver cell Atlas publication
+All_cells <- colnames(All_expression_10X)
+All_cells_filt <- All_cells[All_cells %in% annot_all$cell]
+All_expression_filt <- All_expression_10X[,All_cells %in% annot_all$cell]
+dim(All_expression_10X)
+dim(All_expression_filt)
+length(annot_all$cell)
+
+# reorder the rows to match the order
+annot_all <- annot_all[match(All_cells_filt, annot_all$cell), ]
+rownames(annot_all) <- seq(1,nrow(annot_all))
+annot_all
+write.table(annot_all, "/srv/data/joelpm/Data/ATLAS/MouseStSt/All_cells/annot_mouseStStAll_withStellateandLSECsandMono_sortSeurat.csv", sep=",", row.names=FALSE, col.names = TRUE, quote=FALSE)
+```
+
+## 1.3. Create Seurat Object
+```{r}
+# Create Seurat Object
+All_Seurat <- CreateSeuratObject(counts = All_expression_filt, project = "AllLiverCells", min.cells = 3, min.features = 200)
+```
+
+## 1.4. Normalizing and scaling the data
+```{r}
+# Normalization of the data 
+All_Seurat <- NormalizeData(All_Seurat, normalization.method = "LogNormalize", scale.factor = 10000)
+# Finding High-Variable Genes
+All_Seurat <- FindVariableFeatures(All_Seurat, selection.method = "vst", nfeatures = 2000)
+# Scaling the data
+All_Seurat <- ScaleData(All_Seurat, features = rownames(All_Seurat))
+```
+
+
+## 1.5. Load metadata
+```{r}
+# Load annotation in Seurat object
+All_Seurat@meta.data <- annot_all
+Idents(All_Seurat) = All_Seurat@meta.data[["annot"]]
+levels(All_Seurat)
+```
+
+## 1.6. Calculate gene lengths to calculate TPM (not needed anymore)
+We load the GTF mm39 file to calculate the gene lengths from the exons width
+```{r, eval=FALSE}
+gtf_txdb <- makeTxDbFromGFF("../Data/Genomes/mm39/mm39.annotation.gtf", format="gtf")
+exons_per_gene <- exonsBy(gtf_txdb,by="gene")
+exonic_gene_sizes <- sum(width(reduce(exons_per_gene)))
+gene_sizes <- na.omit(exonic_gene_sizes[rownames(All_Seurat)])
+```
+
+```{r, eval=FALSE}
+ensembl <- useMart("ensembl", dataset="mmusculus_gene_ensembl")
+transcript_lengths <- getBM(attributes=c("external_gene_name", "transcript_length"), 
+                      filters="external_gene_name", 
+                      values=rownames(All_Seurat), 
+                      mart=ensembl)
+
+gene_lengths <- aggregate(transcript_length ~ external_gene_name, data=transcript_lengths, FUN=max)
+gene_lengths <- setNames(gene_lengths$transcript_length, gene_lengths$external_gene_name)
+gene_lengths <- gene_lengths[rownames(All_Seurat)]
+gene_lengths <- gene_lengths[!is.na(gene_lengths)]
+mean(gene_lengths)
+```
+
+```{r, echo=FALSE, eval=FALSE}
+# Create S4 object with the cell type expression objects separately
+
+# Extract unique cell types
+cell_types <- unique(annot_all$annot)
+
+# Initialize an empty character vector to store slot definitions
+slot_defs <- character(length = length(cell_types))
+slot_set <- character(length = length(cell_types))
+
+# Loop over cell types and create a slot definition for each one
+cell_names <- c()
+for (i in seq_along(cell_types)) {
+  cellname <- gsub(" ", "_", cell_types[i])
+  cellname <- gsub("&", "and", cellname)
+  cellname <- gsub("-", "_", cellname)
+  cellname <- gsub("\\.", "", cellname)
+  cell_names <- c(cell_names,cellname)
+  slot_defs[i] <- paste0(cellname, " = 'list',")
+  slot_set[i] <- paste0(cellname, " = list(),")
+}
+
+# Combine slot definitions into a single string
+slot_defs <- paste0(slot_defs, collapse = " ")
+slot_set <- paste0(slot_set, collapse = " ")
+slot_defs <- sub(",\\s*$", "", slot_defs)
+slot_set <- sub(",\\s*$", "", slot_set)
+
+# Create the S4 class with the dynamic slot definitions
+class_def <- paste0("setClass('MyClass_NICHE_all', slots = c(", slot_defs, "))")
+class_set <- paste0("NICHE_specific <- new('MyClass_NICHE_all',  ", slot_set, ")")
+eval(parse(text = class_def))
+eval(parse(text = class_set))
+
+pseudobulk_all <- data.frame(matrix(NA, nrow = nrow(All_Seurat), ncol = 0))
+for (c in seq(1,length(cell_types))){
+  pob.cell <- annot_all$cell[annot_all$annot == cell_types[c]]
+  pob.mx <- All_Seurat[,colnames(All_Seurat) %in% pob.cell]
+  pob.bulk <- rowSums(pob.mx)
+  df.bulk <- data.frame(pob.bulk)
+  colnames(df.bulk) <- cell_types[c]
+  pseudobulk_all <- cbind(pseudobulk_all, df.bulk)
+  slot(NICHE_specific, cell_names[c])[["Seurat_matrix"]] <- pob.mx
+  slot(NICHE_specific, cell_names[c])[["pseudobulk_raw"]] <- pob.bulk
+}
+pseudobulk_all
+
+rm(pob.cell, pob.mx, c, i, cell, cell_names, cellname, slot_defs, slot_set, class_def, class_set)
+```
+
+
+# Pseudo-bulk to CPM 
+```{r, echo=FALSE, eval=FALSE}
+norm.pseudobulk_all <- round((pseudobulk_all / colSums(pseudobulk_all))* 1e6,5)
+norm.pseudobulk_all
+write.table(norm.pseudobulk_all, "../Data/ATLAS/MouseStSt/All_pseudobulk_specific_CPM.tsv", sep="\t", row.names=TRUE, col.names = NA, quote=FALSE, fileEncoding = "UTF-8") 
+```
+
+# 3. Differential Expression analysis with Seurat
+```{r}
+# list options for groups to perform differential expression on
+levels(All_Seurat)
+```
+
+## 3.1. Seurat FindMarkers
+```{r, eval=FALSE}
+# Define the levels
+cell_types <- levels(All_Seurat)
+cell_types <- c("Kupffer cells", "Monocytes", "Stellate cells", "Hepatocytes", "LSECs", "Neutrophils")
+# Loop through each cell type
+for (cell_type in cell_types) {
+  # Find markers
+  # DEG <- FindMarkers(All_Seurat, ident.1 = cell_type, ident.2 = NULL)
+  DEG <- FindMarkers(All_Seurat, ident.1 = cell_type, ident.2 = NULL, logfc.threshold = 0, min.diff.pct = 0, test.use =  "MAST")
+  print(DEG)
+  for (cell_type2 in cell_types) {
+    
+  }
+  # Set the working directory
+  setwd("/srv/data/joelpm/Code")
+  
+  # Save the DEG object
+  #save(DEG, ascii = FALSE, file = paste0("../Data/ATLAS/MouseStSt/specificScore/DEG_", gsub("\\s+", "_", cell_type), ".bin"))
+  write.table(DEG, paste0("../Data/ATLAS/MouseStSt/specificScore/DEG_", gsub("\\s+", "_", cell_type),".tsv"), sep = "\t", row.names = TRUE, col.names = NA, quote = FALSE)
+  
+  # Uncomment the line below if you want to load the saved DEG object
+  # load(paste0("../Data/ATLAS/MouseStSt/specificScore/DEG_", gsub("\\s+", "", cell_type), ".bin"))
+}
+```
+
+## 3.2. Presto
+```{r, eval = FALSE}
+All_Seurat@meta.data[["annot"]] <- factor(All_Seurat@meta.data[["annot"]])
+All_Seurat@meta.data[["cluster"]] <- factor(All_Seurat@meta.data[["cluster"]])
+# presto.All <- wilcoxauc(All_Seurat, groups_use = c("Kupffer cells", "Monocytes", "Neutrophils"))
+presto.All <- wilcoxauc(All_Seurat, groups_use = levels(All_Seurat), assay = "data")
+presto.All
+```
+
+# Input expression DEGs for ANANSE influence
+```{r}
+cell_types <- c("Kupffer cells", "Monocytes", "Stellate cells", "Hepatocytes", "LSECs", "Neutrophils")
+cell_types_ABC <- c("KC","Mono","HSC","Hep","LSEC","Neutro")
+for (cell_type1 in cell_types){
+  for (cell_type2 in cell_types){
+    if (cell_type1 != cell_type2){
+      presto.1vs2 <- wilcoxauc(All_Seurat, groups_use = c(cell_type1, cell_type2), assay = "data", pct_in_min = 10)
+      presto.1vs2_filt <- presto.1vs2[presto.1vs2$group == cell_type2 & presto.1vs2$pct_in >= 10,]
+      presto.1vs2_filt <- presto.1vs2_filt[order(presto.1vs2_filt$padj, -presto.1vs2_filt$logFC ),]
+      
+      # Renaming the column names for ANANSE influence
+      names(presto.1vs2_filt)[names(presto.1vs2_filt) == "logFC"] <- "log2FoldChange"
+      names(presto.1vs2_filt)[names(presto.1vs2_filt) == "group"] <- "rank"
+      presto.1vs2_filt$rank <- seq(1,nrow(presto.1vs2_filt))
+      rownames(presto.1vs2_filt) <- presto.1vs2_filt$feature
+      presto.1vs2_filt <- presto.1vs2_filt[, -1]
+
+      # Save the results for the current cell type
+      cell_type <- c(cell_type1, cell_type2)
+      cell_type <- gsub("\\.", "", cell_type)
+      cell_type <- gsub("\\s+", "_", cell_type)
+      cell_type <- gsub("-", "_", cell_type)
+      cell_type <- gsub("&", "and", cell_type)
+      write.table(presto.1vs2_filt, paste0("../Data/ATLAS/MouseStSt/specificScore/PRESTO/VS_DEGs/PRESTO_DEGs_",cell_types_ABC[which(cell_types == cell_type1)],"vs",cell_types_ABC[which(cell_types == cell_type2)],".tsv"), sep = "\t", row.names = TRUE, col.names = NA, quote = FALSE)
+    }
+  }
+}
+```
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+
+directory_path <- "../Data/ATLAS/MouseStSt/specificScore/PRESTO/"
+if (!dir.exists(directory_path))
+  dir.create(directory_path)
+
+# Create an empty list to store individual cell type dataframes
+all.presto.cell <- list()
+
+# Loop over each cell type
+for (cell_type in unique(presto.All$group)) {
+  # Filter data for the current cell type
+  presto.cell <- presto.All[presto.All$group == cell_type,]
+  
+  # Handle zero values in pct_in and pct_out
+  presto.cell$pct_in[presto.cell$pct_in == 0] <- 10^-1000
+  presto.cell$pct_out[presto.cell$pct_out == 0] <- 10^-1000
+  
+  # Calculate specificity ranking
+  presto.cell$pct_inout_diff <- (presto.cell$pct_in - presto.cell$pct_out)
+  presto.cell <- presto.cell[order(presto.cell$pct_inout_diff),]
+  presto.cell$rank.pct_diff <- seq(1, nrow(presto.cell))
+  
+  # Calculate expression ranking
+  presto.cell <- presto.cell[order(presto.cell$logFC),]
+  presto.cell$rank.FC <- seq(1, nrow(presto.cell))
+  
+  # Calculate final specificity score
+  presto.cell$specif.score <- (presto.cell$rank.pct_diff * presto.cell$rank.FC)
+  presto.cell$specif.score <- (presto.cell$specif.score - min(presto.cell$specif.score)) / (max(presto.cell$specif.score) - min(presto.cell$specif.score))
+  presto.cell <- presto.cell[order(-presto.cell$specif.score),]
+  rownames(presto.cell) <- seq(nrow(presto.cell),1)
+  presto.cell$rank.specific <- seq(nrow(presto.cell),1)
+  
+  # Save the results for the current cell type
+  cell_type <- gsub("\\.", "", cell_type)
+  cell_type <- gsub("\\s+", "_", cell_type)
+  cell_type <- gsub("-", "_", cell_type)
+  cell_type <- gsub("&", "and", cell_type)
+  write.table(presto.cell, paste0("../Data/ATLAS/MouseStSt/specificScore/PRESTO/PRESTO_specificScore_", cell_type, ".tsv"), sep = "\t", row.names = TRUE, col.names = NA, quote = FALSE)
+  
+  # Append the current cell type dataframe to the list
+  words <- strsplit(cell_type, "_")[[1]]
+  code_word <- ifelse(length(words) == 1, words, toupper(paste(substr(words, 1, 1), collapse = "")))
+  rownames(presto.cell) <- paste0(code_word, ".",seq(1, nrow(presto.cell)))
+  all.presto.cell[[cell_type]] <- presto.cell
+}
+
+# Merge all cell type dataframes into a single dataframe
+merged_data <- bind_rows(all.presto.cell)
+
+# Save the merged dataframe
+write.table(merged_data, "../Data/ATLAS/MouseStSt/specificScore/PRESTO/ALL_PRESTO_specificScore.tsv", sep = "\t", row.names = TRUE, col.names = NA, quote = FALSE)
+
+```
+
+
+```{r}
+# Kupfer cells
+presto.KC <- presto.All[presto.All$group == "Kupffer cells",]
+presto.KC$pct_in <- presto.KC$pct_in
+presto.KC$pct_out <- presto.KC$pct_out
+presto.KC$pct_in[presto.KC$pct_in == 0] <- 10^-1000
+presto.KC$pct_out[presto.KC$pct_out == 0] <- 10^-1000
+# specificity ranking
+presto.KC$pct_inout_diff <- (presto.KC$pct_in - presto.KC$pct_out)
+presto.KC <- presto.KC[order(presto.KC$pct_inout_diff),]
+presto.KC$rank.pct_diff <- seq(1:nrow(presto.KC))
+
+# expression ranking
+presto.KC <- presto.KC[order(presto.KC$logFC),]
+presto.KC$rank.FC <- seq(1:nrow(presto.KC))
+
+# final specificity score
+presto.KC$specif.score <- (presto.KC$rank.pct_diff * presto.KC$rank.FC)
+presto.KC$specif.score <- (presto.KC$specif.score - min(presto.KC$specif.score)) / (max(presto.KC$specif.score) - min(presto.KC$specif.score))
+presto.KC <- presto.KC[order(-presto.KC$specif.score),]
+rownames(presto.KC) <- seq(1:nrow(presto.KC))
+presto.KC$rank.specific <- seq(1:nrow(presto.KC))
+
+# save the results
+write.table(presto.KC, "../Data/ATLAS/MouseStSt/specificScore/PRESTO_specificScore_Kupffer_cells.tsv", sep="\t", row.names=TRUE, col.names = NA, quote=FALSE)
+
+presto.KC
+presto.KC[presto.KC$feature %in% c("Clec4f","Spi1","Nr1h3","Spic","Rbpj"),][,c(1,14,15)]
+hist(presto.KC$specif.score, breaks = 100)
+```
+
+```{r}
+library(ggplot2)
+library(ggrepel)
+
+highlight_genes <- c("Clec4f", "Spi1", "C1qc", "Cd5l", "Spic", "Nr1h3", "Rbpj")
+highlight_genes <- unique(c("Clec4f", "Spi1", "C1qc", "Cd5l", "Spic", "Nr1h3", "Rbpj", head(presto.KC$feature, 8), tail(presto.KC$feature, 8)))
+highlighted_rows <- which(presto.KC$feature %in% highlight_genes)
+
+plot_data <- data.frame(x = presto.KC$rank.FC, y = presto.KC$rank.pct_diff, gene = presto.KC$feature)
+
+ggplot(plot_data, aes(x, y)) +
+  geom_point(color = "black", size = 0.5) +
+  geom_point(data = plot_data[highlighted_rows, ], aes(x, y), color = "red", size = 1) +
+  geom_label_repel(data = plot_data[highlighted_rows, ], aes(label = gene), color = "red", nudge_x = 0.2, nudge_y = 0.1, max.overlaps = Inf) +
+  xlab("rank.FC") +
+  ylab("rank.pct_diff") +
+  ggtitle("Specificity Score Ranking") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5), plot.title.position = "plot")
+
+```
+
+```{r}
+library(ggplot2)
+library(ggrepel)
+
+highlight_genes <- c("Clec4f", "Spi1", "C1qc", "Cd5l", "Spic", "Nr1h3", "Rbpj")
+highlight_genes <- unique(c("Clec4f", "Spi1", "C1qc", "Cd5l", "Spic", "Nr1h3", "Rbpj", head(presto.KC$feature, 8), tail(presto.KC$feature, 8)))
+highlighted_rows <- which(presto.KC$feature %in% highlight_genes)
+
+plot_data <- data.frame(x = presto.KC$rank.FC, y = presto.KC$rank.pct_diff, gene = presto.KC$feature)
+
+plot <- ggplot(plot_data, aes(x, y)) +
+  geom_point(color = "black", size = 0.5) +
+  geom_point(data = plot_data[highlighted_rows, ], aes(x, y), color = "red", size = 1) +
+  geom_label_repel(data = plot_data[highlighted_rows, ], aes(label = gene), color = "red", nudge_x = 0.2, nudge_y = 0.1, max.overlaps = Inf) +
+  xlab("rank.FC") +
+  ylab("rank.pct_diff") +
+  ggtitle("Kupffer Cells specificity score ranking") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5), plot.title.position = "plot")
+
+plot
+ggsave("../Results/plots/specific_score/presto_KC_specific_score.jpg", plot, dpi = 300)
+
+```
+
+
+
+# Muscat analysis
+```{r}
+library(scater)
+library(Seurat)
+library(dplyr)
+
+sce <- SingleCellExperiment(assays=list(counts=All_Seurat@assays[["RNA"]]@counts)) 
+annot4sce <- annot_all[,c(1,2,4,5,6,7,8)]
+#annot4sce <- annot4sce %>% rename(cluster_id = annot, sample_id = sample, group_id = digest) 
+annot4sce
+colData(sce) <- cbind(colData(sce), annot4sce)
+metadata(sce) <- list(annot4sce$annot)
+```
+
+Let sce be a SingleCellExperiment object with cell metadata (colData) columns
+
+"sample_id" specifying unique sample identifiers (e.g., PeterPan1, Nautilus7, ...)
+"group_id" specifying each sample's experimental condition (e.g., reference/stimulated, healthy/diseased, ...)
+"cluster_id" specifying subpopulation (cluster) assignments (e.g., B cells, dendritic cells, ...)
+```{r}
+library(muscat)
+# compute pseudobulks (sum of counts)
+pb <- aggregateData(sce, 
+    assay = "counts", fun = "sum",
+    by = c("annot"))
+
+# metadata(pb) <- list(annot4sce$annot)
+    
+# run pseudobulk (aggregation-based) DS analysis
+metadata(pb) <- list(experiment_info = NULL)
+
+ds_pb <- pbDS(pb, method = "edgeR")
+```
+
+# Seurat specificity: perc.cell.expr
+```{r}
+levels(All_Seurat)
+FindMarkers(Seurat.Zeb2, ident.1 = "Kupffer cells", ident.2 = NULL, test.use =  "MAST", logfc.threshold = 0, min.pct = 0)
+```
+
+
+

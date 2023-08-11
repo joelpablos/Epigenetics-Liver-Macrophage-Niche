@@ -1,0 +1,664 @@
+---
+title: "DiffBind_Lasso_mewtwo"
+author: "Joel Pablos Martín"
+date: "2023-06-10"
+output: html_document
+---
+
+# Setting working directory
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir ="/srv/data/joelpm/Code")
+setwd("/srv/data/joelpm/Code")
+getwd()
+```
+
+```{r, eval=FALSE}
+# To convert the .rmd to .R
+knitr::purl("/srv/data/joelpm/Code/DiffBind_Lasso_mewtwo.rmd", documentation=2)
+```
+
+# Load packages
+```{r, eval = FALSE}
+# install.packages("devtools")
+# devtools::install_github("GreenleafLab/chromVARmotifs")
+# BiocManager::install("GenomicRanges")
+# BiocManager::install("monaLisa")
+# BiocManager::install("JASPAR2020")
+# devtools::install_github("GreenleafLab/chromVARmotifs")
+# BiocManager::install("TFBSTools")
+# BiocManager::install("DiffBind")
+# BiocManager::install("DirichletMultinomial")
+# BiocManager::install("BSgenome.Mmusculus.UCSC.mm39")
+# BiocManager::install("SummarizedExperiment")
+# BiocManager::install("Biostrings")
+# BiocManager::install("ComplexHeatmap")
+# BiocManager::install("HDF5Array")
+# BiocManager::install("BiocParallel")
+# install.packages("snow")
+# install.packages("circlize")
+# install.packages("Seurat")
+```
+
+```{r, results = FALSE, echo = FALSE, message = FALSE}
+library(devtools)
+library(GenomicRanges)
+library(monaLisa)
+library(JASPAR2020)
+library(TFBSTools)
+library(DiffBind)
+library(DirichletMultinomial)
+library(BSgenome.Mmusculus.UCSC.mm39)
+library(SummarizedExperiment)
+library(Biostrings)
+library(ComplexHeatmap)
+library(HDF5Array)
+library(BiocParallel)
+library(snow)
+library(circlize)
+library(Seurat)
+library(chromVARmotifs)
+```
+
+
+
+# DiffBind Analysis
+## Loading data and experimental design
+```{r}
+library(DiffBind)
+db.NICHE <- read.table('../Data/DiffBind/samplesheet_thesis.tsv',sep = "\t", header=T)
+dbObj.NICHE <- dba(sampleSheet=db.NICHE)
+dbObj.NICHE
+```
+
+## Affinity binding matrix
+```{r}
+dbObj.NICHE <- dba.count(dbObj.NICHE, bUseSummarizeOverlaps=TRUE) # bParallel =  FALSE
+dbObj.NICHE
+```
+
+## PCA plot
+```{r}
+dba.plotPCA(dbObj.NICHE, attributes = DBA_FACTOR)
+plot(dbObj.NICHE)
+```
+
+## Differential enrichment analysis
+```{r}
+# Design of the pairwise comparisons
+dbObj.NICHE <- dba.contrast(dbObj.NICHE, categories=DBA_FACTOR, minMembers = 2)
+# Differential enrichment analysis
+dbObj.NICHE <- dba.analyze(dbObj.NICHE, method=dbObj.NICHE$config$AnalysisMethod, bParallel=TRUE)
+dbObj.NICHE <- dba.analyze(dbObj.NICHE, method=DBA_DESEQ2, bParallel=TRUE)
+dbObj.NICHE <- dba.analyze(dbObj.NICHE, method=DBA_EDGER, bParallel=TRUE)
+# save(dbObj.NICHE, ascii=FALSE, file="../Results/DiffBind_Lasso/dbObj_NICHE.bin")
+# load("../Results/DiffBind_Lasso/dbObj_NICHE.bin")
+```
+
+
+```{r}
+designDB_NICHE <- dba.show(dbObj.NICHE, bContrasts=T)
+designDB_NICHE
+# dba.plotVenn(dbObj.NICHE, contrast=1,method=DBA_ALL_METHODS)
+```
+
+```{r}
+dba.plotMA(dbObj.NICHE, contrast = c(2,4,13,21), method=DBA_DESEQ2)
+```
+
+```{r}
+dba.plotMA(dbObj.NICHE, contrast = c(2,4,13,21), bXY=TRUE)
+pvals <- dba.plotBox(dbObj.NICHE, contrast = 21)
+```
+
+## Extracting results
+```{r}
+res_deseq_NICHE <- dba.report(dbObj.NICHE, method=DBA_DESEQ2, contrast = 21, th=1)
+res_deseq_NICHE
+```
+
+```{r}
+setClass("MyClass_NICHE", slots = c(KC = "list", HSC = "list", LSEC = "list", Hep = "list", Neutro = "list", KC_KG = "list", Mono_KG = "list"))
+NICHE_DiffBind <- new("MyClass_NICHE", KC = list(), HSC = list(), LSEC = list(), Hep = list(), Neutro = list(), KC_KG = list(), Mono_KG = list())
+
+cell_types <- c("KC","HSC","LSEC","Hep","Neutro","KC_KG","Mono_KG")
+
+for (i in seq(1,nrow(designDB_NICHE))){
+  res_deseq_NICHE <- dba.report(dbObj.NICHE, method=DBA_DESEQ2, contrast = i, th=1)
+  slot(NICHE_DiffBind, designDB_NICHE$Group[i])[[paste0(designDB_NICHE$Group[i],"vs",designDB_NICHE$Group2[i],"_GR")]] <- res_deseq_NICHE
+  slot(NICHE_DiffBind, designDB_NICHE$Group[i])[[paste0(designDB_NICHE$Group[i],"vs",designDB_NICHE$Group2[i],"_seq")]] <- getSeq(BSgenome.Mmusculus.UCSC.mm39, res_deseq_NICHE)
+  rm(res_deseq_NICHE)
+}
+
+# save(NICHE_DiffBind, ascii=FALSE, file="../Results/DiffBind_Lasso/dbObjResults_NICHE.bin")
+# load("../Results/DiffBind_Lasso/dbObjResults_NICHE.bin")
+```
+
+
+## Prepare TFBM database
+```{r, eval = FALSE, echo = FALSE}
+# get PFMs (vertebrate TFs from Jaspar)
+pfms <- getMatrixSet(JASPAR2020, list(matrixtype = "PFM", 
+                                      tax_group = "vertebrates"))
+
+# randomly sample 300 PFMs for illustration purposes (for quick runtime)
+set.seed(4563)
+pfms <- pfms[sample(length(pfms), size = 300)]
+
+# convert PFMs to PWMs
+pwms <- toPWM(pfms)
+```
+
+```{r}
+# we get the PWMs from Mus musculus TFs from JASPAR database
+# PWMsDB <- getMatrixSet(JASPAR2020, opts = list(matrixtype = "PWM", tax_group = "vertebrates", familly = "mus.musculus"))
+# length(PWMsDB)
+PFMsDB <- readRDS("../Data/GimmeMotifs/CisBP_forR/cisBP_mouse_pfms_2021.rds?download=1")
+PWMsDB <- toPWM(PFMsDB) # Convert PFM matrix list to a PWM matrix list with TFBStools
+length(PWMsDB)
+namesTFs <- names(PWMsDB@listData)
+c("Nr1h3", "Rbpj","Rxra","Irf8","Spi1","Spic","Stat1","Stat2") %in% namesTFs
+```
+
+
+## Full similarity matrix
+```{r}
+# TFBSmatrixCorFull <- cor(TFBSmatrix[, colnames(se)], method = "pearson")
+# TFBSmatrixCorFull[1:5,1:5]
+suppressWarnings(
+PFMmatrixSimFull <-  motifSimilarity(PFMsDB,
+                                      y = NULL,
+                                      method = "R",
+                                      BPPARAM = BiocParallel::SnowParam(workers = 20),
+                                      verbose = TRUE)
+)
+PFMmatrixSimFull[1:5,1:5]
+#PFMmatrixSimFull_SRscore <- read.table("../Data/GimmeMotifs/CisBP_forR/Escores.txt", sep = "\t", header = TRUE)
+
+# save(PFMmatrixSimFull, ascii=FALSE, file="../Results/DiffBind_Lasso/PFMmatrixSimFull_CisBP21.bin")
+# load("../Results/DiffBind_Lasso/PFMmatrixSimFull_CisBP21.bin")
+```
+
+We scan for the motifs from the TFs in the differentially ATAC-seq peaks
+```{r}
+# get TFBS on given GRanges (peaks)
+# suppress warnings generated by matchPWM due to the presence of Ns 
+# in the sequences
+library(BiocParallel)
+library(parallel)
+# detectCores()
+
+for (i in seq(1, nrow(designDB_NICHE))){
+#for (i in seq(20, nrow(designDB_NICHE))){
+  
+  peakSeq <- slot(NICHE_DiffBind,designDB_NICHE$Group[i])[[paste0(designDB_NICHE$Group[i],"vs",designDB_NICHE$Group2[i],"_seq")]]
+  
+  set.seed(2711)
+  suppressWarnings({
+    hits <- findMotifHits(query = PWMsDB, subject = peakSeq, min.score = 10.0,
+                          BPPARAM = BiocParallel::MulticoreParam(30))
+  }) # BiocParallel::SnowParam(workers = 16)
+  
+  # get TFBS matrix
+  TFBSmatrix <- unclass(table(factor(seqnames(hits), levels = seqlevels(hits)),
+                              factor(hits$pwmname, levels = name(PWMsDB))))
+  TFBSmatrix[1:6, 1:6]
+  
+  # remove TF motifs with 0 binding sites in all regions
+  zero_TF <- colSums(TFBSmatrix) == 0
+  sum(zero_TF)
+  #> [1] 2
+  TFBSmatrix <- TFBSmatrix[, !zero_TF]
+  
+  # calculate G+C and CpG obs/expected
+  fMono <- oligonucleotideFrequency(peakSeq, width = 1L, as.prob = TRUE)
+  fDi <- oligonucleotideFrequency(peakSeq, width = 2L, as.prob = TRUE)
+  fracGC <- fMono[, "G"] + fMono[, "C"]
+  oeCpG <- (fDi[, "CG"] + 0.01) / (fMono[, "G"] * fMono[, "C"] + 0.01)
+  
+  # add GC and oeCpG to predictor matrix
+  TFBSmatrix <- cbind(fracGC, oeCpG, TFBSmatrix)
+  TFBSmatrix[1:6, 1:6]
+  
+  # We create the SE object and calculate the randomized lasso stability selection
+  rownames(TFBSmatrix) <- seq(1,nrow(TFBSmatrix))
+  TFBSmatrix <- as.matrix(TFBSmatrix)
+  slot(NICHE_DiffBind, designDB_NICHE$Group[i])[[paste0(designDB_NICHE$Group[i],"vs",designDB_NICHE$Group2[i],"_TFBSmatrix")]] <- TFBSmatrix
+  
+  res_deseq_NICHE <- slot(NICHE_DiffBind,designDB_NICHE$Group[i])[[paste0(designDB_NICHE$Group[i],"vs",designDB_NICHE$Group2[i],"_GR")]]
+
+  set.seed(2711)
+  se <- randLassoStabSel(x = TFBSmatrix[,-c(1,2)], y = res_deseq_NICHE$Fold, 
+                         cutoff = 0.8)
+  
+  slot(NICHE_DiffBind,designDB_NICHE$Group[i])[[paste0(designDB_NICHE$Group[i],"vs",designDB_NICHE$Group2[i],"_LassoSE")]] <- se
+
+  # save(NICHE_DiffBind, ascii=FALSE, file="../Results/DiffBind_Lasso/dbObjResults_withLASSO_NICHE_ALREADYSAVED.bin")
+  # load("../Results/DiffBind_Lasso/dbObjResults_withLASSO_NICHE.bin")
+}
+
+suppressWarnings(rm(se, pvals, peakSeq, fDi, fMono, i, oeCpG, fracGC, zero_TF, namesTFs, hits, res_deseq_NICHE))
+```
+
+
+
+```{r}
+directional = TRUE
+selProbMin = 0.8
+selProbMinPlot = 0.4
+showSelProbMin = TRUE
+col = c("cadetblue", "grey", "red")
+method = "pearson" # c("pearson", "kendall", "spearman")
+ylimext = 0.25
+legend = "topright"
+legend.cex = 1.0
+
+plotSelectionProb <- function(se,
+                              directional = TRUE,
+                              selProbMin = metadata(se)$stabsel.params.cutoff, 
+                              selProbMinPlot = 0.4,
+                              showSelProbMin = TRUE,
+                              col = c("cadetblue", "grey", "red"),
+                              method = c("pearson", "kendall", "spearman"),
+                              ylimext = 0.25,
+                              legend = "topright", 
+                              legend.cex = 1.0, 
+                              cex.main = 0.6,
+                              title = "",
+                              ...) {
+    
+    # checks
+    # .assertScalar(x = directional, type = "logical")
+    # .assertScalar(x = selProbMin, type = "numeric", rngIncl = c(0, 1))
+    # .assertScalar(x = selProbMinPlot, type = "numeric", rngIncl = c(0, 1))
+    # .assertScalar(x = showSelProbMin, type = "logical")
+    # .assertScalar(x = legend, type = "character")
+    # .assertScalar(x = legend.cex, type = "numeric", rngExcl = c(0, Inf))
+    stopifnot(exprs = {
+        is(se, "SummarizedExperiment")
+        selProbMin >= selProbMinPlot
+    })
+    # .assertVector(x = col, len = 3L)
+    method <- match.arg(method)
+    # .assertScalar(x = ylimext, type = "numeric", rngIncl = c(0, Inf))
+
+    # selection probabilities * sign(correlation to y)
+    probs <- se$selProb
+    cols <- ifelse(probs > selProbMin, col[1], col[2])
+    if (directional) {
+        corcoef <- as.vector(cor(x = SummarizedExperiment::rowData(se)$y,
+                                 y = SummarizedExperiment::assay(se, "x"),
+                                 method = method))
+        probs <- probs * sign(corcoef)
+    }
+
+    # kept and ordered
+    keep <- which(abs(probs) >= selProbMinPlot)
+    keep <- keep[order(probs[keep], decreasing = TRUE)]
+    cols <- cols[keep]
+    predNames <- colnames(se)[keep]
+    probs <- probs[keep]
+    up <- probs > 0
+    selection <- data.frame(predNames = predNames, probs = probs)
+    selection <- selection[which(abs(selection$probs) >= selProbMin),]
+    rownames(selection) <- seq(1,nrow(selection))
+    
+
+    # plot
+    if (any(keep)) {
+        ret <- graphics::barplot(probs, col = cols, border = NA,
+                                        ylab = ifelse(
+                                            directional, 
+                                            "Directional selection probability",
+                                            "Selection probability"
+                                        ),
+                                        names.arg = NA, axes = FALSE,
+                                        ylim = c(min(probs) - ylimext,
+                                                 max(probs) + ylimext),
+                                        main = title,
+                                        ...)
+        ys <- pretty(x = c(0, probs))
+        graphics::axis(side = 2, at = ys)
+        if (showSelProbMin) {
+            hval <- if (directional) c(-1, 1) * selProbMin else selProbMin
+            graphics::abline(h = hval, lty = 5, col = col[3])
+        }
+        graphics::legend(x = legend, bty = "n", fill = col[seq_len(2)], 
+                         border = NA, legend = c("selected", "not selected"), 
+                         cex = legend.cex)
+        if (any(up)) {
+            graphics::text(x = ret[up], y = probs[up] + par("cxy")[2] / 3,
+                           labels = predNames[up], col = cols[up],
+                           xpd = TRUE, srt = 90, adj = c(0, 0.5))
+        }
+        if (any(!up)) {
+            graphics::text(x = ret[!up], y = probs[!up] - par("cxy")[2] / 3,
+                           labels = predNames[!up], col = cols[!up],
+                           xpd = TRUE, srt = 90, adj = c(1, 0.5))
+        }
+    } else{
+        ret <- NULL
+    }
+    
+    list(plot = invisible(ret), probs = selection)
+}
+suppressWarnings(rm(directional, selProbMin, selProbMinPlot, showSelProbMin, col, method, ylimext, legend, legend.cex, keep, up, probs, cols))
+```
+
+The selected TFs are enlarged to include other TFs with a similar motif, and the PFM similarity in the resulting matrix is calculated.
+```{r}
+setClass("MyClass_NICHE", slots = c(KC = "list", HSC = "list", LSEC = "list", Hep = "list", Neutro = "list", KC_KG = "list", Mono_KG = "list"))
+NICHE_DiffBind_expr <- new("MyClass_NICHE", KC = list(), HSC = list(), LSEC = list(), Hep = list(), Neutro = list(), KC_KG = list(), Mono_KG = list())
+
+cell_types <- c("KC","HSC","LSEC","Hep","Neutro","KC_KG","Mono_KG")
+
+for (i in seq(1, nrow(designDB_NICHE))){
+
+  se <- slot(NICHE_DiffBind,designDB_NICHE$Group[i])[[paste0(designDB_NICHE$Group[i],"vs",designDB_NICHE$Group2[i],"_LassoSE")]]
+  selection <- plotSelectionProb(se, directional = TRUE, title = paste0(designDB_NICHE$Group2[i], " (-) vs ", designDB_NICHE$Group[i], " (+)"))
+  selection <- selection[["probs"]]
+  df <- data.frame(PFMmatrixSimFull[selection$predNames,])
+  
+  tf_expanded <- c()
+  selection$expansion <- rep(NA,nrow(selection))
+  for (tf in seq(1,nrow(df))){
+    TF <- selection$predNames[tf]
+    tf_list <- unlist(apply(df[tf, -1], 1, function(row) {
+                                        col_names <- colnames(df)[-1]
+                                        high_indices <- which(row > 0.8)
+                                        high_family <- col_names[high_indices]
+                                        if (length(high_family) > 0) {
+                                          return(high_family)
+                                        } else {
+                                          return(NA)
+                                        }
+                                      }))
+
+    selection$expansion[tf] <-  paste(tf_list[-1], collapse = ",")
+    p <- as.numeric(selection$probs[tf])
+    for (x in tf_list[-1]){
+      if (x != TF){
+        P <- p * df[tf,x]
+        tobind <- c(x, P, TF)
+        if (x %in% selection$predNames){
+          n <- which(selection$predNames == x)
+          N <- c(as.numeric(selection$probs[n]), P)
+          selection$probs[n] <- N[which.max(abs(N))]
+        }else{
+          selection <- rbind(selection, tobind)
+        }
+      }
+    }
+  }
+  selection$probs  <- round(as.numeric(selection$probs), 2)
+  selection <- selection[order(-selection$probs),]
+  rownames(selection) <- seq(1,nrow(selection))
+  
+  # Positive values
+  slot(NICHE_DiffBind_expr, designDB_NICHE$Group[i])[[paste0(designDB_NICHE$Group[i],"vs",designDB_NICHE$Group2[i])]] <- selection[selection$probs > 0,]
+  # Negative values
+  selectionMin <- selection[selection$probs < 0,]
+  selectionMin$probs <- abs(selectionMin$probs)
+  selectionMin <- selectionMin[order(-selectionMin$probs),]
+  rownames(selectionMin) <- seq(1,nrow(selectionMin))
+  slot(NICHE_DiffBind_expr, designDB_NICHE$Group2[i])[[paste0(designDB_NICHE$Group2[i],"vs",designDB_NICHE$Group[i])]] <- selectionMin
+  
+  
+}
+# save(NICHE_DiffBind_expr, ascii=FALSE, file="../Results/DiffBind_Lasso/dbObjResults_NICHE_DiffBind_expr_raw.bin")
+# load("../Results/DiffBind_Lasso/dbObjResults_NICHE_DiffBind_expr_raw.bin")
+suppressWarnings(rm(se, selection, df, tf_expanded, TF, tf_list, p, x, P, tobind, n, N, selectionMin, i, tf))
+```
+
+## Expression filtering
+```{r}
+# load("../Results/DiffBind_Lasso/dbObjResults_NICHE_DiffBind_expr_raw.bin")
+
+exprData <- read.table("../Data/ATLAS/MouseStSt/All_pseudoBulkCell.tsv", sep = "\t", header = TRUE, row.names = 1)
+exprData
+CELLS =  c("KC","HSC","LSEC","Hep","Neutro","KC_KG","Mono_KG")
+
+for (cell in CELLS){
+  slts <- slot(NICHE_DiffBind_expr, cell)
+  snam <- names(slts)
+  take <- match(CELLS, gsub(paste0(cell,"vs"), "", snam))
+  take <- take[!is.na(take)]
+  slts <- slts[take]
+  snam <- names(slts)
+  # load expression data
+  expCell <- exprData[,grep(gsub("_KG", "",cell),colnames(exprData))]
+
+  for (x in seq(1,length(slts))){
+    cell1vs2_KG <- strsplit(snam[x],"vs")[[1]]
+    cell1vs2 <- gsub("_KG", "", cell1vs2_KG)
+    if (cell1vs2[1] != cell1vs2[2]){
+      path_DEG = paste0("../Data/ATLAS/MouseStSt/specificScore/PRESTO/VS_DEGs/PRESTO_DEGs_",cell1vs2[2],"vs",cell1vs2[1],".tsv")
+      DEG <- read.table(path_DEG, sep = "\t", header = TRUE, row.names = 1)
+      
+      DFB <- slts[[x]]
+      DFBexp <- merge(DFB, expCell, by.x = "predNames", by.y = "row.names", all.x = TRUE)
+      DFBexp <- DFBexp[complete.cases(DFBexp),]
+      colnames(DFBexp) <- gsub(paste0(cell1vs2[1],"_"), "", colnames(DFBexp))
+      
+      # We filter out genes that are expressed in less than 5% of the cells
+      DFBexp <- DFBexp[DFBexp$PercCellsExpr > 5.0 ,]
+      DFBexp <- DFBexp[order(-DFBexp$probs, -DFBexp$PercCellsExpr),]
+      
+      # We add the log2FC data
+      DEG$Gene <- rownames(DEG)
+      DEG <- DEG[,c("Gene","log2FoldChange")]
+      DFBexp_mg <- merge(DFBexp, DEG, by.x = "predNames", by.y = "Gene", all.x = TRUE)
+      colnames(DFBexp_mg)[ncol(DFBexp_mg)] <- paste0("log2FC_",gsub("_KG", "", snam[x]))
+      DFBexp_mg[, ncol(DFBexp_mg)] <- ifelse(is.na(DFBexp_mg[, ncol(DFBexp_mg)]), 0, DFBexp_mg[, ncol(DFBexp_mg)])
+      DFBexp_mg <- DFBexp_mg[order(-DFBexp_mg$probs, -DFBexp_mg[,ncol(DFBexp_mg)]),]
+      rownames(DFBexp_mg) <- seq(1,nrow(DFBexp_mg))
+
+      # We save the results
+      slot(NICHE_DiffBind_expr, cell)[[snam[[x]]]] <- DFBexp_mg
+    }
+  }
+}
+suppressWarnings(rm(slts, snam, take, expCell, cell1vs2_KG, cell1vs2, path_DEG, DEG, DFB, DFBexp, DFBexp_mg, x, cell))
+# save(NICHE_DiffBind_expr, ascii=FALSE, file="../Results/DiffBind_Lasso/dbObjResults_NICHE_DiffBind_expr_filt.bin")
+# load("../Results/DiffBind_Lasso/dbObjResults_NICHE_DiffBind_expr_filt.bin")
+```
+
+
+Gene expression filtering is applied for the expanded TF list
+```{r}
+load("../Results/DiffBind_Lasso/dbObjResults_NICHE_DiffBind_expr_filt.bin")
+
+CELLS1 <- c("KC","HSC","LSEC","Hep","Neutro","Mono_KG")
+CELLS2 <- c("KC","HSC","LSEC","Hep","Neutro")
+CELLS3 <- c("KC","HSC","LSEC","Hep")
+CELLS4 <- c("KC_KG","Mono_KG")
+CELLS_LIST <- list(CELLS1, CELLS2, CELLS3, CELLS4)
+#CELLS_LIST <- list(CELLS3)
+
+m = 0
+for (CELLS in CELLS_LIST){
+  m = m + 1
+  colCRM <- CELLS
+  for (cell in CELLS){
+    slts <- slot(NICHE_DiffBind_expr, cell)
+    snam <- names(slts)
+    take <- match(CELLS, gsub(paste0(cell,"vs"), "", snam))
+    take <- take[!is.na(take)]
+    slts <- slts[take]
+    snam <- names(slts)
+    
+    colCRM <- snam
+    zerorw <- rep(c(0), each = length(colCRM))
+    CRM <- data.frame(matrix(ncol = length(colCRM), nrow = 0))
+    colnames(CRM) <- colCRM
+    # Load differential expression the data of the cell type
+    cellnam <- gsub("_KG","",cell)
+    expCell <- exprData[,grep(cellnam,colnames(exprData))]
+
+    for (x in seq(1,length(slts))){
+      vsCell = snam[x]
+      for (r in slts[[x]]$predNames){
+        if (r %in% rownames(CRM)){
+          CRM[r,vsCell] <- 1
+        }else{
+            CRM[r,] <- zerorw
+            CRM[r,vsCell] <- 1
+            # CRM[r,c("tpm","PercCellsExpr")] <- expCell[r,]
+           }
+        }
+      }
+    
+    # Now we calculate in how many cell types does each TF is present
+    message(CELLS)
+    CRM$TotalSpec <- rowSums(CRM)
+    CRM <- CRM[order(-CRM$TotalSpec, rownames(CRM)),]
+    slot(NICHE_DiffBind_expr, cell)[[paste0("COMMON",m,"_",cell)]] <- CRM
+    # CRM <- NICHE_DiffBind_expr@KC[["COMMON3_KC"]]
+    
+    # We merge the comparisons by doing the mean
+    otherCells <- CELLS[!CELLS %in% cell]
+    
+    slts <- slot(NICHE_DiffBind_expr, cell)
+    snam <- names(slts)
+    take <- match(otherCells, gsub(paste0(cell,"vs"), "", snam))
+    take <- take[!is.na(take)]
+    slts <- slts[take]
+    snam <- names(slts)
+    
+    comp_list <- list()
+    for (other in seq(1,length(snam))){
+      # DFBLS <- subset(slts[[other]], select = c("predNames","expansion","probs"))
+      DFBLS <- slts[[other]][,c(1,2,4,5,6)]
+      colOrignal <- colnames(DFBLS)
+      colnames(DFBLS) <- paste0(other,".", colnames(DFBLS))
+      colnames(DFBLS)[c(1,3,4)] <- c("predNames","tpm","PercCellsExpr")
+      comp_list[[snam[[other]]]] <- DFBLS
+      
+      if (other == 1){First <- DFBLS}
+      else{
+        DFBLS_merge <- merge(First, DFBLS, by = "predNames", all = TRUE)
+        DFBLS_merge[is.na(DFBLS_merge)] <- 0
+        First <- DFBLS_merge
+        }
+      if (length(snam) == 1){
+        DFBLS_merge <- First
+        DFBLS_merge[is.na(DFBLS_merge)] <- 0
+        }
+    }
+    
+    DFBLS_merge <- DFBLS_merge[, -grep("tpm", colnames(DFBLS_merge))]
+    DFBLS_merge <- DFBLS_merge[, -grep("PercCellsExpr", colnames(DFBLS_merge))]
+    DFBLS_final <- merge(DFBLS_merge, expCell, by.x = "predNames", by.y = "row.names", all.x = TRUE)
+    colnames(DFBLS_final) <- gsub(paste0(cellnam,"_"),"", colnames(DFBLS_final))
+    # DFBLS_merge <- DFBLS_merge[, c("predNames", "expansion", setdiff(colnames(DFBLS_merge), c("predNames", "expansion")))]
+    head(DFBLS_merge)
+    # DFBLS_final <- data.frame(factor = DFBLS_merge$predNames, row.names = seq(1,nrow(DFBLS_merge)))
+    
+    # Now we do the mean of each value in the dataframe
+    if (length(snam) != 1){
+      DFBLS_final$probs <- rowMeans(DFBLS_final[,grep("\\.probs", colnames(DFBLS_final))])
+      DFBLS_final$log2FC <- rowMeans(DFBLS_merge[,grep("\\.log2FC", colnames(DFBLS_final))])
+    }else{
+      DFBLS_final$probs <- DFBLS_final[,grep("\\.probs", colnames(DFBLS_final))]
+      DFBLS_final$log2FC <- DFBLS_merge[,grep("\\.log2FC", colnames(DFBLS_final))]
+    }
+    DFBLS_final <- DFBLS_final[, -grep("\\.probs", colnames(DFBLS_final))]
+    DFBLS_final <- DFBLS_final[, -grep("\\.log2FC", colnames(DFBLS_final))]
+    
+    # We merge them with he specificity score
+    DFBLS_final_merge <- merge(DFBLS_final, CRM, by.x = "predNames", by.y = "row.names", all = TRUE)
+    DFBLS_final_merge$TotalSpec[is.na(DFBLS_final_merge$TotalSpec)] <- 0
+    DFBLS_final_merge$NewProb <- (DFBLS_final_merge$probs * DFBLS_final_merge$TotalSpec + 1)/length(CELLS)
+    DFBLS_final_merge <- DFBLS_final_merge[order(-DFBLS_final_merge$NewProb),]
+    rownames(DFBLS_final_merge) <- seq(1,nrow(DFBLS_final_merge))
+    slot(NICHE_DiffBind_expr, cell)[[paste0("COMMON",m,"_",cell)]] <- DFBLS_final_merge
+    
+    # We filter out TFs thattttt are more expressed in the other cell types than the mainCell type
+    DFBLS_final_merge <- DFBLS_final_merge[DFBLS_final_merge$log2FC > 0,]
+
+    # Create the scatter plot with modified aesthetics and non-overlapping labels
+    thresh = 25
+    top_labels1 <- DFBLS_final_merge[order(DFBLS_final_merge$probs, decreasing = TRUE), ][1:thresh, ]
+    plot1 <- ggplot(data = DFBLS_final_merge, aes(x = log2FC, y = probs)) +
+            geom_point(aes(size = PercCellsExpr) , shape = 21, fill = "deepskyblue3", color = "deepskyblue4", alpha = 0.4) +
+            geom_text_repel(data = subset(top_labels1, probs > 0.0),
+                            aes(label = predNames), box.padding = 0.5,  max.overlaps = Inf,  force = 0.5) +
+            labs(x = "Log2 fold change of TF",
+                 y = "Probability",
+                 title = paste0(cell," - DiffBind + Lasso.Rand.Stab.Sel. (COMMON ",m,")")) +
+            theme_classic() +
+            theme(plot.title = element_text(hjust = 0.5)) + # face = "bold",family = "Times New Roman"
+            scale_size_continuous(name = "% cells with expression", 
+                                  breaks = c(0, 25, 50, 75, 100),
+                                  labels = c(0, 25, 50, 75, 100),
+                                  limits = c(0, 100)) 
+            # + coord_cartesian(ylim = c(min(DFBLS_final_merge$probs), 1.25))
+    
+    top_labels2 <- DFBLS_final_merge[order(DFBLS_final_merge$NewProb, decreasing = TRUE), ][1:thresh, ]
+    plot2 <- ggplot(data = DFBLS_final_merge, aes(x = log2FC, y = NewProb)) +
+        geom_point(aes(size = PercCellsExpr) , shape = 21, fill = "deepskyblue3", color = "deepskyblue4", alpha = 0.4) +
+        geom_text_repel(data = subset(top_labels2, NewProb > 0.0),
+                        aes(label = predNames), box.padding = 0.5, max.overlaps = Inf,  force = 0.5) +
+        labs(x = "Log2 fold change of TF",
+             y = "Probability",
+             title = paste0(cell," - DiffBind + Lasso.Rand.Stab.Sel. (COMMON ",m,")")) +
+        theme_classic() +
+        theme(plot.title = element_text(hjust = 0.5)) + # face = "bold",family = "Times New Roman"
+        scale_size_continuous(name = "% cells with expression", 
+                                  breaks = c(0, 25, 50, 75, 100),
+                                  labels = c(0, 25, 50, 75, 100),
+                                  limits = c(0, 100)) 
+        # + coord_cartesian(ylim = c(min(DFBLS_final_merge$NewProb), 1.25))
+    
+    # Save the plot as a high-resolution JPEG
+    pathjpg1 = paste0("../Results/DiffBind_Lasso/plots/",cell,"/DiffBind_",cell,"_",m,"_probMeans.jpg")
+    ggsave(pathjpg1, plot1, dpi = 300, width = 8, height = 6, units = "in")
+    pathjpg2 = paste0("../Results/DiffBind_Lasso/plots/",cell,"/DiffBind_",cell,"_",m,"_probMeansANDspec.jpg")
+    ggsave(pathjpg2, plot2, dpi = 300, width = 8, height = 6, units = "in")
+    
+    # Display the plot
+    message(paste0(cell," - DiffBind + Lasso.Rand.Stab.Sel. (COMMON ",m,")"))
+    print(plot1)
+    print(plot2)
+  }
+  
+}
+# save(NICHE_DiffBind_expr, ascii=FALSE, file="../Results/DiffBind_Lasso/NICHE_DiffBind_expr_FINAL.bin")
+# load("../Results/DiffBind_Lasso/NICHE_DiffBind_expr_FINAL.bin")
+```
+
+
+```{r}
+# heatmap
+selTFs <- NICHE_DiffBind_expr@Mono_KG[["Mono_KGvsKC_KG"]][["predNames"]]
+pfmsSel <- PFMsDB[match(selTFs, name(PFMsDB))]
+maxwidth <- max(sapply(TFBSTools::Matrix(pfmsSel), ncol))
+seqlogoGrobs <- lapply(pfmsSel, seqLogoGrob, xmax = maxwidth)
+se <- NICHE_DiffBind@Mono_KG[["Mono_KGvsKC_KG_LassoSE"]]
+
+hmSeqlogo <- rowAnnotation(logo = annoSeqlogo(seqlogoGrobs, which = "row"),
+                           annotation_width = unit(2, "inch"), 
+                           show_annotation_name = FALSE
+)
+
+colAnn <- HeatmapAnnotation(AUC = se$selAUC, selProb = se$selProb,
+                            show_legend = TRUE, 
+                            show_annotation_name = TRUE,
+                            col = list(
+                              AUC = colorRamp2(c(0, 1), 
+                                               c("white", "brown")),
+                              selProb = colorRamp2(c(0, 1), 
+                                                   c("white", "steelblue")))
+)
+
+Heatmap(TFBSmatrixCorSel, 
+        show_row_names = TRUE, 
+        show_column_names = TRUE, 
+        name = "Pear. Cor.", column_title = "Selected TFs",
+        col = colorRamp2(c(-1, 0, 1), c("blue", "white", "red")), 
+        right_annotation = hmSeqlogo,
+        top_annotation = colAnn)
+```
+
+
+
+

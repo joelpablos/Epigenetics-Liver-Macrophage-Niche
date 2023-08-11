@@ -1,0 +1,488 @@
+---
+title: "DataMining_Project_2022_23"
+author: "Joel Pablos Martin"
+date: "2023-04-28"
+output: html_document
+---
+
+```{r}
+knitr::opts_knit$set(root.dir ="/srv/data/joelpm/Code")
+```
+
+```{r, eval=FALSE}
+# To convert the .rmd to .R
+knitr::purl("/srv/data/joelpm/Code/DataMining_Project_2022_23.rmd", documentation=2)
+```
+
+
+```{r}
+# install.packages("vctrs")
+# install.packages('Seurat')
+# BiocManager::install("DESeq2")
+# install.packages('Matrix')
+# BiocManager::install(c('Rsamtools', 'ChIPseeker', 'monocle','RcisTarget', 'RCy3', 'clusterProfiler'))
+# install.packages("devtools")
+# devtools::install_github("jiang-junyao/IReNA")
+# install.packages("scTenifoldNet")
+# install.packages("remotes")
+# remotes::install_github("aertslab/SCENIC")
+# install.packages("igraph")
+# BiocManager::install("clusterProfiler")
+library(vctrs)
+library(Seurat)
+library(DESeq2)
+library(Matrix)
+library(devtools)
+library(IReNA)
+library(scTenifoldNet)
+library(SCENIC)
+library(igraph)
+library(clusterProfiler)
+```
+
+
+```{r}
+knitr::opts_knit$set(root.dir ="/srv/data/joelpm/Code")
+# https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE192740
+```
+
+# Load dataset
+```{r}
+#/home/joelpm/Projects/Data/ATLAS/MouseStSt/All_cells/rawData_mouseStSt/countTable_mouseStSt
+All_expression_10X <- Read10X("/srv/data/joelpm/Data/ATLAS/MouseStSt/All_cells/countTable_mouseStSt",
+                              gene.column = 1,
+                              cell.column = 1,
+                              unique.features = TRUE,
+                              strip.suffix = TRUE)
+
+All_expression_10X[1:10,1:10]
+dim(All_expression_10X)
+```
+
+
+
+We load the annotation metadata
+```{r}
+# Load your annotations CSV file (previously adapted in scanpy)
+annot_all <- read.csv("/srv/data/joelpm/Data/ATLAS/MouseStSt/All_cells/annot_mouseStStAll_withStellateandLSECsandMono.csv", header = TRUE, stringsAsFactors = FALSE)
+annot_all <- annot_all[order(annot_all$annot),]
+annot_all
+
+# Remove cells that did not pass the filtering from the Liver cell Atlas publication
+All_cells <- colnames(All_expression_10X)
+All_cells_filt <- All_cells[All_cells %in% annot_all$cell]
+All_expression_filt <- All_expression_10X[,All_cells %in% annot_all$cell]
+dim(All_expression_10X)
+dim(All_expression_filt)
+length(annot_all$cell)
+
+# reorder the rows to match the order
+annot_all <- annot_all[match(All_cells_filt, annot_all$cell), ]
+rownames(annot_all) <- seq(1,nrow(annot_all))
+annot_all
+write.table(annot_all, "/srv/data/joelpm/Data/ATLAS/MouseStSt/All_cells/annot_mouseStStAll_withStellateandLSECsandMono_sortSeurat.csv", sep=",", row.names=FALSE, col.names = TRUE, quote=FALSE)
+```
+
+```{r}
+# Create Seurat Object
+All_Seurat <- CreateSeuratObject(counts = All_expression_filt, project = "AllLiverCells", min.cells = 3, min.features = 200)
+
+# Normalization of the data 
+All_Seurat <- NormalizeData(All_Seurat, normalization.method = "LogNormalize", scale.factor = 10000)
+
+# Load annotation in Seurat object
+All_Seurat@meta.data <- annot_all
+rownames(All_Seurat@meta.data) <- All_Seurat@meta.data$cell
+Idents(All_Seurat) = All_Seurat@meta.data[["annot"]]
+All_Seurat <- AddMetaData(All_Seurat, annot_all)
+```
+
+
+```{r}
+levels(All_Seurat)
+```
+
+```{r, echo=FALSE, eval=FALSE}
+# We create a S4 object to store all the expression data by populations
+# Extract unique cell types
+cell_types <- unique(annot_all$annot)
+
+# Initialize an empty character vector to store slot definitions
+slot_defs <- character(length = length(cell_types))
+slot_set <- character(length = length(cell_types))
+
+# Loop over cell types and create a slot definition for each one
+cell_names <- c()
+for (i in seq_along(cell_types)) {
+  cellname <- gsub(" ", "_", cell_types[i])
+  cellname <- gsub("&", "and", cellname)
+  cellname <- gsub("-", "_", cellname)
+  cellname <- gsub("\\.", "", cellname)
+  cell_names <- c(cell_names,cellname)
+  slot_defs[i] <- paste0(cellname, " = 'list',")
+  slot_set[i] <- paste0(cellname, " = list(),")
+}
+
+# Combine slot definitions into a single string
+slot_defs <- paste0(slot_defs, collapse = " ")
+slot_set <- paste0(slot_set, collapse = " ")
+slot_defs <- sub(",\\s*$", "", slot_defs)
+slot_set <- sub(",\\s*$", "", slot_set)
+
+# Create the S4 class with the dynamic slot definitions
+class_def <- paste0("setClass('MyClass_NICHE_all', slots = c(", slot_defs, "))")
+class_set <- paste0("NICHE_specific <- new('MyClass_NICHE_all',  ", slot_set, ")")
+eval(parse(text = class_def))
+eval(parse(text = class_set))
+
+pseudobulk_all <- data.frame(matrix(NA, nrow = nrow(All_Seurat), ncol = 0))
+for (c in seq(1,length(cell_types))){
+  pob.cell <- annot_all$cell[annot_all$annot == cell_types[c]]
+  pob.mx <- All_Seurat[,colnames(All_Seurat) %in% pob.cell]
+  pob.mxnorm <- All_Seurat_filtnorm[,colnames(All_Seurat_filtnorm) %in% pob.cell]
+  pob.bulk <- rowSums(pob.mx)
+  df.bulk <- data.frame(pob.bulk)
+  colnames(df.bulk) <- cell_types[c]
+  pseudobulk_all <- cbind(pseudobulk_all, df.bulk)
+  slot(NICHE_specific, cell_names[c])[["Seurat_matrix"]] <- pob.mx
+  slot(NICHE_specific, cell_names[c])[["Seurat_matrix_normalized"]] <- pob.mxnorm
+  slot(NICHE_specific, cell_names[c])[["pseudobulk_raw"]] <- pob.bulk
+}
+pseudobulk_all
+
+rm(pob.cell, pob.mx, pob.mxnorm, c, i, cell_names, cellname, slot_defs, slot_set, class_def, class_set)
+```
+
+
+# scTenifoldNet Monocyte vs Kupffer Cell
+https://pubmed.ncbi.nlm.nih.gov/31587991/
+
+## 1. Load the datasets
+```{r}
+set.seed(1127)
+# Monocytes
+SeuratNorm.Mono <- GetAssayData(All_Seurat,slot = 'data')[,which(Idents(All_Seurat) == "Monocytes")]
+dim(SeuratNorm.Mono)
+## filtering to just keep genes with expression non-zero in at least 5% of the cells
+prop_expr.Mono <- apply(SeuratNorm.Mono > 0, 1, mean)
+keep_genes.Mono <- names(prop_expr.Mono[prop_expr.Mono >= 0.05])
+
+# Kupffer Cells
+SeuratNorm.KC <- GetAssayData(All_Seurat,slot = 'data')[,which(Idents(All_Seurat) == "Kupffer cells")]
+dim(SeuratNorm.KC)
+## filtering to just keep genes with expression non-zero in at least 5% of the cells
+prop_expr.KC <- apply(SeuratNorm.KC > 0, 1, mean)
+keep_genes.KC <- names(prop_expr.KC[prop_expr.KC >= 0.05])
+
+# Union of genes expressed in both cell types and filtering
+union.genes <- unique(c(keep_genes.Mono, keep_genes.KC))
+mtGenes <- rownames(SeuratNorm.Mono)[grepl('^mt-', rownames(SeuratNorm.Mono), ignore.case = TRUE)]
+keyGenes <- c("Clec4f","Spic","Nr1h3","Spi1","Rxra", "Rbpj")
+mtGenes <- NULL
+keyGenes <- NULL
+# union.genes <- sample(unique(keep_genes.Mono,keep_genes.KC), size = 100, replace=F) # genes
+SeuratNorm.Mono <- SeuratNorm.Mono[row.names(SeuratNorm.Mono) %in% c(union.genes, mtGenes, keyGenes),]
+SeuratNorm.KC <- SeuratNorm.KC[row.names(SeuratNorm.KC) %in% c(union.genes, mtGenes, keyGenes),]
+
+#subsampling to test faster
+#SeuratNorm.Mono <- SeuratNorm.Mono[, sample(colnames(SeuratNorm.Mono), size = 2000, replace=F)] # cells
+
+#subsampling to test faster
+SeuratNorm.KC <- SeuratNorm.KC[, sample(colnames(SeuratNorm.KC), size = ncol(SeuratNorm.Mono), replace=F)] # cells
+
+dim(SeuratNorm.Mono)
+dim(SeuratNorm.KC)
+
+keyGenes <- c("Clec4f","Spic","Nr1h3","Spi1","Rxra", "Rbpj")
+keyGenes %in% rownames(SeuratNorm.Mono)
+keyGenes %in% rownames(SeuratNorm.KC)
+```
+
+## 2. scTenifoldNet
+
+```{r}
+mx.SeuratNorm.Mono <- as.matrix(SeuratNorm.Mono)
+mx.SeuratNorm.KC <- as.matrix(SeuratNorm.KC)
+scTFNet.MonovsKC <- scTenifoldNet(X = mx.SeuratNorm.Mono, Y = mx.SeuratNorm.KC,
+                          nc_nNet = 10, nc_nCells = 500,
+                          td_K = 3, qc_minLibSize = 30,
+                          qc = FALSE, nCores = 20)
+scTFNet.MonovsKC
+setwd("/srv/data/joelpm/Code")
+# save(scTFNet.MonovsKC, ascii=FALSE, file="../Data/DataMining/scTFNet.MonovsKC.bin")
+load("../Data/DataMining/scTFNet.MonovsKC_20230512.bin")
+```
+
+## 3. Weight-averaged denoised gene regulatory networks
+```{r}
+# Network of Monocytes
+igraph.Mono <- igraph::graph_from_adjacency_matrix(adjmatrix = scTFNet.MonovsKC$tensorNetworks$X, weighted = TRUE)
+igraph.Mono
+plot(igraph.Mono)
+# Network of Kupffer Cells
+igraph.KC <- igraph::graph_from_adjacency_matrix(adjmatrix = scTFNet.MonovsKC$tensorNetworks$Y, weighted = TRUE)
+igraph.KC
+plot(igraph.KC)
+```
+
+## 4. Manifold alignment
+In the manifold alignment, there are two rows for each gene, one for each sample:
+```{r}
+scTFNet.MonovsKC$manifoldAlignment[c('X_Nr1h3', 'y_Nr1h3'),]
+```
+Each pair of coordinates (representing a gene in each sample) is given a Euclidean distance, and the sum of the distances is used to conduct the differential regulation test.
+```{r}
+dist(scTFNet.MonovsKC$manifoldAlignment[c('X_Nr1h3', 'y_Nr1h3'),])
+dist(scTFNet.MonovsKC$manifoldAlignment[c('X_Clec4f', 'y_Clec4f'),])
+```
+
+## 5. Manifold alignment distances as the basis for differential regulation
+```{r}
+diffReg.MonovsKC <- scTFNet.MonovsKC$diffRegulation
+diffReg.MonovsKC <- diffReg.MonovsKC[order(diffReg.MonovsKC$p.adj, -diffReg.MonovsKC$distance, -diffReg.MonovsKC$FC),]
+rownames(diffReg.MonovsKC) <- seq(1,nrow(diffReg.MonovsKC))
+head(diffReg.MonovsKC, n = 100)
+diffReg.MonovsKC[diffReg.MonovsKC$gene == "Nr1h3",]
+diffReg.MonovsKC[diffReg.MonovsKC$gene == "Rbpj",]
+
+write.table(diffReg.MonovsKC, "../Data/DataMining/scTFNet_MonovsKC_diffRegulation.tsv", sep="\t", row.names=FALSE, col.names = TRUE, quote=FALSE)
+```
+## Plotting the results
+```{r}
+library(ggplot2)
+library(ggrepel)
+
+diffReg.MonovsKC
+
+top_labels <- diffReg.MonovsKC[diffReg.MonovsKC$p.adj < 0.05,]
+
+plot_scTFNet <- ggplot(data = diffReg.MonovsKC, aes(x = FC, y = distance)) +
+  geom_point(aes(size = p.adj, fill = ifelse(p.adj > 0.05, "deepskyblue3",
+                                                    ifelse(p.adj <= 0.05, "red"))),
+             shape = 21, color = "black" , alpha = 0.7, stroke = 0.2) +
+  geom_text_repel(data = subset(top_labels), aes(label = gene), color = "black",
+                  box.padding = 0.5, max.overlaps = Inf, force = 0.5,
+                  segment.linetype = 1, segment.size = 0.2) +
+  labs(x = "Log2 fold change in gene expression",
+       y = "Distance",
+       title = paste0("Monocyte to Kupffer cell: scTenifoldNet")) +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_size_continuous(name = "P-value adjusted", range = c(4, 0)) +
+  scale_fill_manual(values = c("deepskyblue3" = "deepskyblue3", "red" = "red")) +
+  coord_cartesian(ylim = c(min(diffReg.MonovsKC$distance), 1))
+
+plot_scTFNet
+```
+
+```{r}
+library(ggplot2)
+library(ggrepel)
+
+top_labels <- diffReg.MonovsKC[diffReg.MonovsKC$p.adj < 0.05,]
+
+plot_scTFNet <- ggplot(data = diffReg.MonovsKC, aes(x = FC, y = distance)) +
+  geom_point(aes(size = p.adj, fill = ifelse(p.adj > 0.05, "deepskyblue3", "red")),
+             shape = 21, color = "black", alpha = 0.7, stroke = 0.2) +
+  geom_text_repel(data = subset(top_labels), aes(label = gene), color = "black",
+                  box.padding = 0.5, max.overlaps = Inf, force = 0.5,
+                  segment.linetype = 1, segment.size = 0.2) +
+  labs(x = "Log2 fold change in gene expression",
+       y = "Distance",
+       title = paste0("Monocyte to Kupffer cell: scTenifoldNet")) +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_size_continuous(name = "P-value adjusted", range = c(4, 0.1), breaks = c(0.01, 0.05, 0.10, 0.25, 0.5, 1.0)) +
+  scale_fill_manual(values = c("deepskyblue3" = "deepskyblue3", "red" = "red")) +
+  coord_cartesian(ylim = c(min(diffReg.MonovsKC$distance), max(diffReg.MonovsKC$distance)))
+
+plot_scTFNet
+
+```
+
+
+
+```{r}
+par(mfrow=c(2,1), mar=c(3,3,1,1), mgp=c(1.5,0.5,0))
+set.seed(2711)
+qChisq <- rchisq(100,1)
+geneColor <- rev(ifelse(scTFNet.MonovsKC$diffRegulation$p.adj < 0.1, 10,1))
+qqplot(qChisq, scTFNet.MonovsKC$diffRegulation$FC, pch = 16, main = 'scTFNet.MonovsKC', col = geneColor, 
+       xlab = expression(X^2~Quantiles), ylab = 'FC', xlim=c(0,8), ylim=c(0,13))
+qqline(qChisq)
+legend('bottomright', legend = c('FDR < 0.1'), pch = 16, col = 'red', bty='n', cex = 0.7)
+```
+
+# Downstream Anaysis - Joel Pablos Martín
+```{r}
+TFananse <- read.table("../Results/ANANSE_view/KC/TFactivity_binding.txt", sep="\t", header = TRUE)
+TFananse <- TFananse[order(-TFananse$activity),]
+TFananse <- TFananse[TFananse$factor != "Alb", ]
+rownames(TFananse) <- seq(1,nrow(TFananse))
+hist(TFananse$activity, breaks = 50) # the highest peak is at 0.8
+
+# We select the TFs from the diffReg list from scTenifoldNet between Monocyte and KC
+diffReg.scTenifoldNet <- diffReg.MonovsKC[diffReg.MonovsKC$gene %in% TFananse$factor,]
+plot(diffReg.MonovsKC$distance, diffReg.MonovsKC$FC)
+plot(diffReg.MonovsKC$distance, diffReg.MonovsKC$p.adj)
+
+# We select the genes significntly differentially regulated (p-adj < 0.05)
+diffReg.MonovsKC.padj <- diffReg.MonovsKC[diffReg.MonovsKC$p.adj <= 0.05,]
+diffReg.MonovsKC.padj[,c(1,2)]
+```
+
+
+
+
+
+# scTenifoldNet TUTORIAL
+## 1. Simulating of a dataset
+Here we simulate a dataset of 2000 cells (columns) and 100 genes (rows) following the negative binomial distribution with high sparsity (~67%). We label the last ten genes as mitochondrial genes ('mt-') to perform single-cell quality control.
+```{r}
+nCells = 2000
+nGenes = 100
+set.seed(1)
+X <- rnbinom(n = nGenes * nCells, size = 20, prob = 0.98)
+X <- round(X)
+X <- matrix(X, ncol = nCells)
+rownames(X) <- c(paste0('ng', 1:90), paste0('mt-', 1:10))
+```
+
+## 2. Generating a perturbed network
+```{r}
+Y <- X
+Y[10,] <- Y[50,]
+Y[2,] <- Y[11,]
+Y[3,] <- Y[5,]
+```
+
+## 3. scTenifoldNet
+Here we run scTenifoldNet under the H0 (there is no change in the regulation of the gene) using the same matrix as input and under the HA (there is a change in the regulation of the genes) using the control and the perturbed network.
+```{r}
+outputH0 <- scTenifoldNet(X = X, Y = X,
+                          nc_nNet = 10, nc_nCells = 500,
+                          td_K = 3, qc_minLibSize = 30)
+
+outputHA <- scTenifoldNet(X = X, Y = Y,
+                          nc_nNet = 10, nc_nCells = 500,
+                          td_K = 3, qc_minLibSize = 30)
+```
+
+The output of sctTenifoldNet is a list with 3 slots containing: tensorNetworks: The computed weight-averaged denoised gene regulatory networks after CANDECOMP/PARAFAC (CP) tensor decomposition, manifoldAlignment: The generated low-dimensional features result of the non-linear manifold alignment, and diffRegulation: The results of the differential regulation analysis.
+
+## 4. Accessing the computed weight-averaged denoised gene regulatory networks
+Networks are provided as matrices of class dgCMatrix that can be easily converted into an igraph object as follows:
+```{r}
+# Network for sample X
+X_igraph <- igraph::graph_from_adjacency_matrix(adjmatrix = outputH0$tensorNetworks$X, weighted = TRUE)
+X_igraph
+plot(X_igraph)
+```
+
+```{r}
+# Network for sample Y
+Y_igraph <- igraph::graph_from_adjacency_matrix(outputH0$tensorNetworks$Y,weighted = TRUE)
+Y_igraph
+plot(Y_igraph)
+```
+## 5. Accessing the manifold alignment result
+The generated low-dimensional features result of the non-linear manifold alignment is reported as an object of class data.frame with 2 times the number of tested genes and d dimensions (by default= 30). The information of the X sample is located at the top of the list followed by the one for the Y sample.
+```{r}
+head(outputH0$manifoldAlignment)
+```
+
+For each gene, there are two rows in the manifold alignment, one for each sample:
+```{r}
+outputH0$manifoldAlignment[c('X_ng59', 'y_ng59'),]
+```
+
+```{r}
+outputHA$manifoldAlignment[c('X_ng59', 'y_ng59'),]
+```
+
+
+The Euclidean distance is computed for each pair of coordinates (representing a gene in each sample) and all the distances together are used to perform the differential regulation test.
+```{r}
+dist(outputH0$manifoldAlignment[c('X_ng59', 'y_ng59'),])
+dist(outputHA$manifoldAlignment[c('X_ng59', 'y_ng59'),])
+```
+
+## 6. Differential regulation based on manifold alignment distances
+As is shown below, under the H0, none of the genes shown a significative difference in regulatory profiles using an FDR cut-off of 0.1, but under the HA, the 6 genes involved in the perturbation (50, 11, 2, 10, 5, and 3) are identified as perturbed.
+```{r}
+head(outputH0$diffRegulation, n = 10)
+```
+
+```{r}
+head(outputHA$diffRegulation, n = 10)
+```
+
+## 7. Plotting the results
+Results can be easily displayed using quantile-quantile plots. Here we labeled in red the identified perturbed genes with FDR < 0.1.
+```{r}
+par(mfrow=c(2,1), mar=c(3,3,1,1), mgp=c(1.5,0.5,0))
+set.seed(1)
+qChisq <- rchisq(100,1)
+geneColor <- rev(ifelse(outputH0$diffRegulation$p.adj < 0.1, 10,1))
+qqplot(qChisq, outputH0$diffRegulation$FC, pch = 16, main = 'H0', col = geneColor, 
+       xlab = expression(X^2~Quantiles), ylab = 'FC', xlim=c(0,8), ylim=c(0,13))
+qqline(qChisq)
+legend('bottomright', legend = c('FDR < 0.1'), pch = 16, col = 'red', bty='n', cex = 0.7)
+
+geneColor <- rev(ifelse(outputHA$diffRegulation$p.adj < 0.1, 'red', 'black'))
+qqplot(qChisq, outputHA$diffRegulation$FC, pch = 16, main = 'HA', col = geneColor, 
+       xlab = expression(X^2~Quantiles), ylab = 'FC', xlim=c(0,8), ylim=c(0,13))
+qqline(qChisq)
+legend('bottomright', legend = c('FDR < 0.1'), pch = 16, col = 'red', bty='n', cex = 0.7)
+```
+
+
+
+# IReNA Tutorial: Integrate bulk ATAC-seq and scRNA-seq data to reconstruct regulatory networks
+https://jiang-junyao.github.io/IReNA/bulk-ATAC+scRNA#integrate-bulk-atac-seq-and-scrna-seq-data-to-reconstruct-regulatory-networks
+```{r}
+###call Mus musculus motif database
+TRANSFAC18 <- Tranfac201803_Mm_MotifTFsF
+TRANSFAC18
+```
+
+## Step 1: Calculate the pseudotime
+```{r}
+### Read seurat_object
+library(IReNA)
+### Calculate the pseudotime and return monocle object
+monocle_object <- get_pseudotime(All_Seurat,gene.use = rownames(All_Seurat))
+###Add pseudotime to the Seurat object
+### This function only support monocle object from monocle2
+All_Seurat_time <- add_pseudotime(All_Seurat, monocle_object)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

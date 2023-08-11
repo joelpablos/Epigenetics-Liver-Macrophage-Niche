@@ -1,0 +1,227 @@
+---
+title: "Pseudobulk_scRNAseq_epigenetics"
+author: "Joel Pablos Martin"
+date: "2023-03-23"
+output: html_document
+---
+
+# Expression Data: scRNA-seq Liver Cell Atlas
+(https://www.livercellatlas.org/)
+
+```{r}
+knitr::opts_knit$set(root.dir ="/srv/data/joelpm/Code")
+# https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE192740
+```
+
+
+```{r}
+# install.packages("vctrs")
+# install.packages('Seurat')
+# BiocManager::install("DESeq2")
+# install.packages('Matrix')
+library(vctrs)
+library(Seurat)
+library(DESeq2)
+library(Matrix)
+```
+
+
+```{r}
+#/home/joelpm/Projects/Data/ATLAS/MouseStSt/All_cells/rawData_mouseStSt/countTable_mouseStSt
+All_Seurat <- Read10X("/srv/data/joelpm/Data/ATLAS/MouseStSt/All_cells/countTable_mouseStSt",
+                              gene.column = 1,
+                              cell.column = 1,
+                              unique.features = TRUE,
+                              strip.suffix = TRUE)
+All_Seurat[1:10,1:10]
+dim(All_Seurat)
+```
+
+```{r}
+# We define a subclass called "MyClass_NICHE"
+setClass("MyClass_NICHE", slots = c(KC = "list", HSC = "list", LSEC = "list", Hep = "list", Neutro = "list", Mono = "list"))
+
+# We create an instance of MyClass
+NICHE_expr <- new("MyClass_NICHE", KC = list(), HSC = list(), LSEC = list(), Hep = list(), Neutro = list(), Mono = list())
+NICHE_DESeq2 <- new("MyClass_NICHE", KC = list(), HSC = list(), LSEC = list(), Hep = list(), Neutro = list(),  Mono = list())
+```
+
+
+```{r}
+# Load your annotations CSV file
+annot_all <- read.csv("/srv/data/joelpm/Data/ATLAS/MouseStSt/All_cells/annot_mouseStStAll_withStellateandLSECsandMono.csv", header = TRUE, stringsAsFactors = FALSE)
+# annot_all <- read.csv("/srv/data/joelpm/Data/ATLAS/MouseStSt/All_cells/annot_mouseStStAll.csv", header = TRUE, stringsAsFactors = FALSE)
+# annot_CD45neg <- read.csv("/srv/data/joelpm/Data/ATLAS/MouseStSt/CD45neg/annot_mouseStStCD45neg.csv", header = TRUE, stringsAsFactors = FALSE)
+# annot_fibroblast <- read.csv("/srv/data/joelpm/Data/ATLAS/MouseStSt/Fibroblasts/annot_mouseStStFibro.csv", header = TRUE, stringsAsFactors = FALSE)
+
+# Identify the cells that belong to your population of interest
+pob.KC <- annot_all$cell[annot_all$annot == "Kupffer cells"]
+pob.HSC <- annot_all$cell[annot_all$annot == "Stellate cells"]
+pob.LSEC <- annot_all$cell[annot_all$annot == "LSECs"]
+pob.Hep <- annot_all$cell[annot_all$annot == "Hepatocytes"]
+pob.Neutro <- annot_all$cell[annot_all$annot == "Neutrophils"]
+pob.Mono <- annot_all$cell[annot_all$annot == "Monocytes"]
+
+# Subset your Seurat object to include only the cells from your population
+annot <- list(pob.KC, pob.HSC, pob.LSEC, pob.Hep, pob.Neutro, pob.Mono)
+cell_types <- c("KC","HSC","LSEC","Hep","Neutro","Mono")
+totalBulkCell_raw <- NULL
+totalBulkCell_tpm <- NULL
+
+# For making several pseudoreplicates of each cell types
+nrep = 3 
+totalBulkCell_DESeq2 <- Matrix(0, nrow = dim(All_Seurat)[1], ncol = length(cell_types)*nrep, sparse = TRUE)
+rownames(totalBulkCell_DESeq2) <- rownames(All_Seurat)
+cell_reps_nam <- paste0(replicate(nrep, cell_types), "_", rep(1:nrep, each=length(cell_types)))
+cell_reps_nam <- cell_reps_nam[order(match(sub("_.*", "", cell_reps_nam), cell_types), sub(".*_", "", cell_reps_nam))]
+colnames(totalBulkCell_DESeq2) <- cell_reps_nam
+
+for (cell in cell_types){
+  # Extract the correspondent cells for each cell type from the entire expression matrix
+  n <- which(cell_types == cell)*nrep-(nrep-1)
+  pobcells <- annot[[which(cell_types == cell)]]
+  SeuratObj <- All_Seurat[,pobcells]
+  slot(NICHE_expr, cell)[["SeuratObject"]] <- SeuratObj
+  
+  # Sum the counts per cell to create a pseudobulk
+  pseudobulk_raw <- rowSums(SeuratObj)
+  # Create 3 pseudo-replicates per cell type to perform DESeq2
+  indices <- sample(rep(1:nrep, each = ceiling(dim(SeuratObj)[2] / nrep), length.out = dim(SeuratObj)[2]))
+  pseudorep <- split(colnames(SeuratObj), indices)
+  cell_reps <- Matrix(0, nrow = dim(SeuratObj)[1], ncol = nrep, sparse = TRUE)
+  rownames(cell_reps) <- rownames(SeuratObj)
+  
+  for (r in seq(pseudorep)) {
+    rep <- SeuratObj[,pseudorep[[r]]]
+    repbulk <- rowSums(rep)
+    cell_reps[,r] <- repbulk
+    totalBulkCell_DESeq2[,n-1+r] <- repbulk
+  }
+  colnames(cell_reps) <- cell_reps_nam[seq(n,n-1+nrep)]
+  
+  
+  # Normalize to convert the pseudocounts into TPM (Transcripts per million)
+  pseudobulk_tpm <- round(pseudobulk_raw *(1000000/sum(pseudobulk_raw)), digits = 5)
+  
+  # We calculate the percentage of cells that express each gene (> 0 counts per cell)
+  expcell <- round(100*rowSums(SeuratObj > 0)/ncol(SeuratObj), digits = 2)
+  BulkCell_raw <- data.frame(cbind(pseudobulk_raw, expcell))
+  BulkCell_tpm <- data.frame(cbind(pseudobulk_tpm, expcell))
+  colnames(BulkCell_tpm) <- c("raw_counts","PercCellsExpr")
+  colnames(BulkCell_tpm) <- c("cpm","PercCellsExpr")
+  
+  # Store them in the S4 class object
+  slot(NICHE_expr, cell)[["PseudobulkCell_raw"]] <- BulkCell_raw
+  slot(NICHE_expr, cell)[["PseudobulkCell_tpm"]] <- BulkCell_tpm
+  slot(NICHE_expr, cell)[["PseudobulkCell_DESeq2"]] <- cell_reps
+  
+  # Merge all the pseudobulk into a same dataframe
+  if (is.null(totalBulkCell_tpm)){totalBulkCell_tpm <- BulkCell_tpm}
+  else{totalBulkCell_tpm <- cbind(totalBulkCell_tpm, BulkCell_tpm)}
+  if (is.null(totalBulkCell_raw)){totalBulkCell_raw <- BulkCell_raw}
+  else{totalBulkCell_raw <- cbind(totalBulkCell_raw, BulkCell_raw)}
+  
+  # We select the genes expressed (> 0 counts) in at least 5% of the total cells
+  selBulkCell <- BulkCell_tpm[BulkCell_tpm$PercCellsExpr >= 5.0,]
+  selBulkCell <- selBulkCell[order(selBulkCell$PercCellsExpr, decreasing = T),]
+  slot(NICHE_expr, cell)[["selBulkCell"]] <- selBulkCell
+  message(round(dim(selBulkCell)[1]*100/dim(BulkCell_tpm)[1], 2), "% of ",cell,"'s total genes are expressed in at least 5% of the cells")
+  
+  # Save the individual pseudobulks in text file
+  write.table(BulkCell_tpm, paste0("../Data/ATLAS/MouseStSt/",cell,"_pseudobulk.tsv"), sep="\t", row.names=TRUE, col.names = NA, quote=FALSE)
+  write.table(BulkCell_raw, paste0("../Data/ATLAS/MouseStSt/",cell,"_pseudobulk_raw.tsv"), sep="\t", row.names=TRUE, col.names = NA, quote=FALSE)
+}
+```
+
+
+```{r}
+# Save raw counts in .tsv file
+colnames(totalBulkCell_raw) <- c("KC_raw","KC_PercCellsExpr",
+                             "HSC_raw","HSC_PercCellsExpr",
+                             "LSEC_raw","LSEC_PercCellsExpr",
+                             "Hep_raw","Hep_PercCellsExpr",
+                             "Neutro_raw","Neutro_PercCellsExpr",
+                             "Mono_raw","Mono_PercCellsExpr")
+head(totalBulkCell_raw)
+write.table(totalBulkCell_raw, "../Data/ATLAS/MouseStSt/All_pseudoBulkCell_raw.tsv", sep="\t", row.names=TRUE, col.names = NA, quote=FALSE)
+
+All_pseudo_raw <- totalBulkCell_raw[,c(1,3,5,7,9,11)]
+colnames(All_pseudo_raw) <- cell_types
+write.table(All_pseudo_raw, "../Data/ATLAS/MouseStSt/All_pseudobulk_raw.tsv", sep="\t", row.names=TRUE, col.names = NA, quote=FALSE)
+
+# Save tpm in .tsv file
+colnames(totalBulkCell_tpm) <- c("KC_tpm","KC_PercCellsExpr",
+                             "HSC_tpm","HSC_PercCellsExpr",
+                             "LSEC_tpm","LSEC_PercCellsExpr",
+                             "Hep_tpm","Hep_PercCellsExpr",
+                             "Neutro_tpm","Neutro_PercCellsExpr",
+                             "Mono_tpm","Mono_PercCellsExpr")
+head(totalBulkCell_tpm)
+write.table(totalBulkCell_tpm, "../Data/ATLAS/MouseStSt/All_pseudoBulkCell.tsv", sep="\t", row.names=TRUE, col.names = NA, quote=FALSE)
+
+All_pseudo_tpm <- totalBulkCell_tpm[,c(1,3,5,7,9,11)]
+colnames(All_pseudo_tpm) <- cell_types
+write.table(All_pseudo_tpm, "../Data/ATLAS/MouseStSt/All_pseudobulk.tsv", sep="\t", row.names=TRUE, col.names = NA, quote=FALSE)
+
+# Save DESeq2 input file in .tsv file
+head(totalBulkCell_DESeq2)
+write.table(totalBulkCell_DESeq2, "../Data/ATLAS/MouseStSt/All_pseudoBulk_DESeq2.tsv", sep="\t", row.names=TRUE, col.names = NA, quote=FALSE)
+
+# dir.create("../Data/S4objects/", recursive = TRUE)
+# save(NICHE_expr, ascii=FALSE, file="../Data/S4objects/NICHE_expr.bin")
+# load("../Data/S4objects/NICHE_expr.bin")
+
+rm(annot, pobcells, SeuratObj, pseudobulk_raw, pseudobulk_tpm, cell, expcell, BulkCell_raw, BulkCell_tpm, selBulkCell, rep, pseudorep, cell_reps, n, indices, cell_reps_nam,r, nrep, repbulk)
+```
+
+
+```{bash}
+head ../Data/ATLAS/MouseStSt/All_pseudoBulkCell.tsv
+head ../Data/ATLAS/MouseStSt/KC_pseudobulk.tsv
+```
+
+Load count matrix and create sample information
+```{r}
+metaData <- data.frame(
+  id = c("KC_1","KC_2","KC_3","HSC_1","HSC_2","HSC_3","LSEC_1","LSEC_2","LSEC_3","Hep_1","Hep_2","Hep_3","Neutro_1","Neutro_2","Neutro_3","Mono_1","Mono_2","Mono_3"),
+  cell_type =  c(rep("KC", 3), rep("HSC", 3), rep("LSEC", 3), rep("Hep", 3), rep("Neutro", 3), rep("Mono", 3)), 
+  replicate=rep(1:3, 6))
+```
+
+We perform DESeq2 analysis of the diferentially expressed genes between all cell types
+https://anansepy.readthedocs.io/en/master/input_data/#differential-expression-data
+```{r}
+# Create a DESeq object
+dds <- DESeqDataSetFromMatrix(countData = totalBulkCell_DESeq2, colData = metaData, design = ~ cell_type)
+# Perform DESeq normalization and estimate dispersion
+dds_DESeq <- DESeq(dds)
+```
+
+
+```{r}
+# Test for DE between all pairwise comparisons of cell types
+cell_types <- unique(metaData$cell_type)
+
+for (c1 in cell_types) {
+  for (c2 in cell_types){
+    if ( c1!= c2){
+      message(c1," vs ",c2)
+      res <- results(dds_DESeq, contrast=c("cell_type", c2, c1))
+      slot(NICHE_DESeq2, c1)[[paste0(c1,"vs",c2)]] <- res
+      write.table(res[,c(2,6)], paste0("../Data/ATLAS/MouseStSt/DESeq2/DESeq2_",c1,"vs",c2,".tsv"), sep="\t", row.names=TRUE, col.names = NA, quote=FALSE)
+    }
+  }
+}
+```
+
+
+```{r}
+KCvsHSC <- data.frame(NICHE_DESeq2@KC[["KCvsHSC"]])
+# upregulated genes
+KCvsHSC <- KCvsHSC[order(KCvsHSC$log2FoldChange),]
+KCvsHSC
+# downregulated genes
+KCvsHSC <- KCvsHSC[order(-KCvsHSC$log2FoldChange),]
+KCvsHSC
+```
+
