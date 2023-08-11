@@ -275,7 +275,7 @@ ggsave(filename = "plot1A.jpeg", plot = plot1A, width = 800, height = 500)
 
 
 
-## Indegree of diffNetwork (Data Mining course project 2023 JPM)
+## Indegree of diffNetwork (Data Mining course project 2023 JPM) - ANANSE influencED
 ```{r}
 library(progress)
 
