@@ -57,30 +57,7 @@ for cell in "${cell_types[@]}"; do
 	ananse view ../Results/ANANSE_binding/${cell}/binding.h5 -o ../Results/ANANSE_view/${cell}/regionsVsTFs_binding.tsv
 	echo "$(date) - ANANSE view: binding probabilities for all factors in wide format (one column per TF) have been extracted: ../Results/ANANSE_view/${cell}/regionsVsTFs_binding.tsv"
 
-done
-
-exit
-
-source="KC"
-target="Neutro"
-
-echo "$(date) - ANANSE influence: performing ananse influence between source (${source}) and target (${target}) network"
-ananse influence  -s ../Results/ANANSE_network/${source}/ANANSE_network.tsv \
-                    -t ../Results/ANANSE_network/${target}/ANANSE_network.tsv \
-                    -d ../Data/ATLAS/MouseStSt/DESeq2_${source}vs${target}.tsv \
-		    -n 12 \
-                    -o ../Results/ANANSE_influence/${source}vs${target}influence.tsv
-
-echo "$(date) - ANANSE influence: ../Results/ANANSE_influence/${source}vsHSC_influence.tsv and ../Results/ANANSE_influence/KCvsHSC_influence_diffnetwork.tsv generated successfully!!"
-
-echo "$(date) - ANANSE plot: plotting top differential TFs between ${source} vs ${target}"
-ananse plot ../Results/ANANSE_influence/${source}vs${target}_influence.tsv \
-                --diff-network ../Results/ANANSE_influence/${source}vs${target}_influence_diffnetwork.tsv \
-                --n-tfs 30 \
-                -t jpeg \
-                -f \
-                -o ../Results/ANANSE_plot/
-echo "$(date) - ANANSE plot: plot of top 30 differential TFS between ${source} and ${target} generated succesfully!!"
+done              
 
 echo "$(date) - ANANSE workflow finished! Thanks for using me! (By Joel Pablos Martin - IRC-VIB Gent, Belgium)"
 
