@@ -1,5 +1,5 @@
 ---
-title: "Cytoscape_networks"
+title: "Cytoscape_networks_Rbpj_Rxra"
 author: "Joel Pablos Martín"
 date: "2023-06-08"
 output: html_document
@@ -287,7 +287,6 @@ for (cell1 in cell_types){
     }
   }
 }
-```
 ```
 
 
