@@ -4,10 +4,9 @@ echo "$(date) - Performing multi-pairwise bidirectional ANANSE influence over al
 
 database="" # write here the name of the database used e.g. ("gimme39")
 db_prefix="" # db_prefix="/${database}_"
-# cell_types=("KC" "HSC" "LSEC" "Hep" "Neutro")
-# cell_types=("Mono_KG" "KC_KG")
-cell_types1=("Neutro" "KC_KG" "Mono_KG")
-cell_types2=("HSC" "LSEC" "Hep" "KC" "Neutro" "Mono_KG" "KC_KG")
+
+cell_types1=("KC_KG" "Mono_KG")
+cell_types2=("HSC" "LSEC" "Hep" "KC" "Mono_KG" "KC_KG")
 
 # Loop over ANANSE pipeline for the choosen cells
 for source in "${cell_types1[@]}"; do
