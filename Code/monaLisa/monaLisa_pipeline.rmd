@@ -1,5 +1,5 @@
 ---
-title: "Nice Coding Epigenetics"
+title: "monaLisa NICHE Epignetics Pipeline"
 author: "Joel Pablos Martin"
 date: "2023-02-26"
 output: html_document
