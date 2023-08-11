@@ -1,0 +1,14 @@
+{
+    "input": "..\/Data\/nf-core\/cutandrun\/samplesheet_cutandrun_LSEC.csv",
+    "outdir": "..\/Data\/nf-core\/cutandrun\/LSEC\/",
+    "multiqc_title": "LSEC CUT&RUN MultiQC",
+    "gtf": "..\/Data\/Genomes\/mm39\/mm39.annotation.gtf",
+    "spikein_bowtie2": "..\/Data\/Genomes\/spike-in-Ecoli_K_12_MG1655\/Bowtie2Index\/",
+    "spikein_fasta": "..\/Data\/Genomes\/spike-in-Ecoli_K_12_MG1655\/Bowtie2Index\/genome.fa",
+    "fasta": "..\/Data\/Genomes\/mm39\/mm39.fa",
+    "peakcaller": "seacr, macs2",
+    "seacr_norm": "norm",
+    "seacr_stringent": "relaxed",
+    "macs_gsize": 2654621837,
+    "replicate_threshold": 2
+}

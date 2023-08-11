@@ -1,0 +1,15 @@
+{
+    "input": "..\/Data\/nf-core\/atacseq\/samplesheet_atacseq.csv",
+    "read_length": 50,
+    "outdir": "..\/Data\/nf-core\/atacseq\/NICHE\/",
+    "email": "joelpablos.ed@gmail.com",
+    "multiqc_title": "LIVER NICHE MultiQC",
+    "fasta": "..\/Data\/Genomes\/mm39\/mm39.fa",
+    "gtf": "..\/Data\/Genomes\/mm39\/mm39.annotation.gtf",
+    "bwa_index": "..\/Data\/nf-core\/atacseq\/genome\/index\/bwa",
+    "macs_gsize": 2654621837,
+    "mito_name": "chrM",
+    "save_reference": true,
+    "narrow_peak": true,
+    "min_reps_consensus": 2
+}

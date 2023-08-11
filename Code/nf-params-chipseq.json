@@ -1,0 +1,12 @@
+{
+    "input": "..\/Data\/nf-core\/chipseq\/samplesheet_chipseq_KGlass.csv",
+    "read_length": 50,
+    "outdir": "..\/Data\/nf-core\/chipseq\/KGlass",
+    "email": "joelpablos.ed@gmail.com",
+    "multiqc_title": "KGlass MultiQC",
+    "fasta": "..\/Data\/Genomes\/mm39\/mm39.fa",
+    "gtf": "..\/Data\/Genomes\/mm39\/mm39.annotation.gtf",
+    "bwa_index": "..\/Data\/nf-core\/chipseq\/genome\/index\/bwa",
+    "macs_gsize": 2654621837,
+    "min_reps_consensus": 2
+}
