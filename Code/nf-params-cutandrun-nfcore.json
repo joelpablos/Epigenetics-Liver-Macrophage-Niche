@@ -1,3 +1,4 @@
+# Code for the preprocessing of LSEC data
 {
     "input": "..\/Data\/nf-core\/cutandrun\/samplesheet_cutandrun_LSEC.csv",
     "outdir": "..\/Data\/nf-core\/cutandrun\/LSEC\/",
