@@ -1,5 +1,5 @@
 ---
-title: "DataMining_Project_2022_23"
+title: "scTenifoldNet_Project_2022_23"
 author: "Joel Pablos Martin"
 date: "2023-04-28"
 output: html_document
