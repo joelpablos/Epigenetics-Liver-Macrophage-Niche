@@ -247,42 +247,33 @@ diffReg.MonovsKC[diffReg.MonovsKC$gene == "Rbpj",]
 
 write.table(diffReg.MonovsKC, "../Data/DataMining/scTFNet_MonovsKC_diffRegulation.tsv", sep="\t", row.names=FALSE, col.names = TRUE, quote=FALSE)
 ```
+
+## We add differential expression data form PRESTO: Monocyte vs KC
+```{r}
+cell1 <- "Mono"
+cell2 <- "KC"
+path_DEGs = paste0("../Data/ATLAS/MouseStSt/specificScore/PRESTO/VS_DEGs/PRESTO_DEGs_",cell1,"vs",cell2,".tsv")
+DEGs.Mono2KC <- read.table(path_DEGs, sep = "\t", header = TRUE, row.names = 1) 
+DEGs.Mono2KC$PerCellDiff <- (DEGs.Mono2KC$pct_in - DEGs.Mono2KC$pct_out)/100
+diffReg.MonovsKC$log2FoldChange <- DEGs.Mono2KC[diffReg.MonovsKC$gene,]$log2FoldChange
+diffReg.MonovsKC$PerCellDiff <- DEGs.Mono2KC[diffReg.MonovsKC$gene,]$PerCellDiff
+DEGs.Mono2KC["Clec4f",]
+```
+
+
 ## Plotting the results
 ```{r}
 library(ggplot2)
 library(ggrepel)
 
-diffReg.MonovsKC
+top_labels <- diffReg.MonovsKC[diffReg.MonovsKC$p.adj < 0.05 ,]
+diffReg.MonovsKCNONSIGN <- na.omit(diffReg.MonovsKC[diffReg.MonovsKC$p.adj >= 0.05 ,])
+top_labels <- rbind(top_labels, diffReg.MonovsKCNONSIGN[head(order(diffReg.MonovsKCNONSIGN$log2FoldChange), 5), ]) # top 5 upreg
+top_labels <- rbind(top_labels, diffReg.MonovsKCNONSIGN[tail(order(diffReg.MonovsKCNONSIGN$log2FoldChange), 5), ]) # top 5 downreg
 
-top_labels <- diffReg.MonovsKC[diffReg.MonovsKC$p.adj < 0.05,]
 
-plot_scTFNet <- ggplot(data = diffReg.MonovsKC, aes(x = FC, y = distance)) +
-  geom_point(aes(size = p.adj, fill = ifelse(p.adj > 0.05, "deepskyblue3",
-                                                    ifelse(p.adj <= 0.05, "red"))),
-             shape = 21, color = "black" , alpha = 0.7, stroke = 0.2) +
-  geom_text_repel(data = subset(top_labels), aes(label = gene), color = "black",
-                  box.padding = 0.5, max.overlaps = Inf, force = 0.5,
-                  segment.linetype = 1, segment.size = 0.2) +
-  labs(x = "Log2 fold change in gene expression",
-       y = "Distance",
-       title = paste0("Monocyte to Kupffer cell: scTenifoldNet")) +
-  theme_classic() +
-  theme(plot.title = element_text(hjust = 0.5)) +
-  scale_size_continuous(name = "P-value adjusted", range = c(4, 0)) +
-  scale_fill_manual(values = c("deepskyblue3" = "deepskyblue3", "red" = "red")) +
-  coord_cartesian(ylim = c(min(diffReg.MonovsKC$distance), 1))
-
-plot_scTFNet
-```
-
-```{r}
-library(ggplot2)
-library(ggrepel)
-
-top_labels <- diffReg.MonovsKC[diffReg.MonovsKC$p.adj < 0.05,]
-
-plot_scTFNet <- ggplot(data = diffReg.MonovsKC, aes(x = FC, y = distance)) +
-  geom_point(aes(size = p.adj, fill = ifelse(p.adj > 0.05, "deepskyblue3", "red")),
+plot_scTFNet <- ggplot(data = diffReg.MonovsKC, aes(x = log2FoldChange, y = distance)) +
+  geom_point(aes(size = PerCellDiff, fill = ifelse(p.adj > 0.05, "deepskyblue3", "red")),
              shape = 21, color = "black", alpha = 0.7, stroke = 0.2) +
   geom_text_repel(data = subset(top_labels), aes(label = gene), color = "black",
                   box.padding = 0.5, max.overlaps = Inf, force = 0.5,
@@ -292,69 +283,9 @@ plot_scTFNet <- ggplot(data = diffReg.MonovsKC, aes(x = FC, y = distance)) +
        title = paste0("Monocyte to Kupffer cell: scTenifoldNet")) +
   theme_classic() +
   theme(plot.title = element_text(hjust = 0.5)) +
-  scale_size_continuous(name = "P-value adjusted", range = c(4, 0.1), breaks = c(0.01, 0.05, 0.10, 0.25, 0.5, 1.0)) +
+  scale_size_continuous(name = "Percentage expressed cells (KC-Monocyte %)", range = c(0.1, 5)) + # breaks = c(100, 75, 50, 25, 0)
   scale_fill_manual(values = c("deepskyblue3" = "deepskyblue3", "red" = "red")) +
   coord_cartesian(ylim = c(min(diffReg.MonovsKC$distance), max(diffReg.MonovsKC$distance)))
 
 plot_scTFNet
-
 ```
-
-
-
-```{r}
-par(mfrow=c(2,1), mar=c(3,3,1,1), mgp=c(1.5,0.5,0))
-set.seed(2711)
-qChisq <- rchisq(100,1)
-geneColor <- rev(ifelse(scTFNet.MonovsKC$diffRegulation$p.adj < 0.1, 10,1))
-qqplot(qChisq, scTFNet.MonovsKC$diffRegulation$FC, pch = 16, main = 'scTFNet.MonovsKC', col = geneColor, 
-       xlab = expression(X^2~Quantiles), ylab = 'FC', xlim=c(0,8), ylim=c(0,13))
-qqline(qChisq)
-legend('bottomright', legend = c('FDR < 0.1'), pch = 16, col = 'red', bty='n', cex = 0.7)
-```
-
-# Downstream Anaysis - Joel Pablos Martín
-```{r}
-TFananse <- read.table("../Results/ANANSE_view/KC/TFactivity_binding.txt", sep="\t", header = TRUE)
-TFananse <- TFananse[order(-TFananse$activity),]
-TFananse <- TFananse[TFananse$factor != "Alb", ]
-rownames(TFananse) <- seq(1,nrow(TFananse))
-hist(TFananse$activity, breaks = 50) # the highest peak is at 0.8
-
-# We select the TFs from the diffReg list from scTenifoldNet between Monocyte and KC
-diffReg.scTenifoldNet <- diffReg.MonovsKC[diffReg.MonovsKC$gene %in% TFananse$factor,]
-plot(diffReg.MonovsKC$distance, diffReg.MonovsKC$FC)
-plot(diffReg.MonovsKC$distance, diffReg.MonovsKC$p.adj)
-
-# We select the genes significntly differentially regulated (p-adj < 0.05)
-diffReg.MonovsKC.padj <- diffReg.MonovsKC[diffReg.MonovsKC$p.adj <= 0.05,]
-diffReg.MonovsKC.padj[,c(1,2)]
-```
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
