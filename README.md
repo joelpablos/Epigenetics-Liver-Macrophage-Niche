@@ -6,11 +6,3 @@ Welcome to the GitHub repository for the project **"Epigenomic Profiling of the 
 The custom bioinformatic pipelines for the whole analytical process, from data preprocessing to final interpretation, are found here. Each cell type's distinct properties have been taken into account when developing these pipelines, resulting in accurate and informative findings. Along with the regulatory signatures and interactions inside the liver macrophage niche, the repository also keeps some results data tables.
 
 ![small_NICHE_trans](https://github.com/joelpablos/Epigenetics-Liver-Macrophage-Niche/assets/27351828/4ca59668-bcc1-4b27-a63d-4387b44bc8c8)
-
-
-
-
-
-
-
-![header2](https://github.com/joelpablos/Epigenetics-Liver-Macrophage-Niche/assets/27351828/448aec71-8c78-4ab1-9f53-56e1a0486e35)
